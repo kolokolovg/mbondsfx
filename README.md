@@ -17,6 +17,7 @@ Java 21 / Gradle проект для доменной модели облига�
   `:integrations-moex`, `:integrations-cbr`, `:persistence-memory`.
 - JPMS descriptors, qualified provider contracts and root `ServiceLoader` composition are configured.
   Phase 4 passed module-path/distribution blackbox validation (18 checks); SQLite persistence is not implemented.
+  The original JavaExec main-runner harness has since been migrated to JUnit without dropping those checks.
 
 The CLI defaults to both capabilities and the memory repository; `--profile=all|moex|cbr` selects
 capabilities without fetching market data. Provider IDs can be selected with `--bond-provider=`,
@@ -42,13 +43,25 @@ capabilities without fetching market data. Provider IDs can be selected with `--
 ./gradlew clean build
 ./gradlew :application:check :core:check :integrations:check :integrations-moex:check :integrations-cbr:check :persistence-memory:check
 ./gradlew run
+./gradlew :core:test --tests '*DomainContractTests'
+./gradlew :test --tests 'ru.onlychill.mbondsfx.ModulePathContractTests'
+./gradlew jacocoAggregateReport
 ```
 
-Проверки модулей запускают dependency-free Java runners через `JavaExec`, а не через JUnit.
-Для офлайн-проверки используйте `./gradlew --offline :application:check :core:check :integrations:check :integrations-moex:check :integrations-cbr:check :persistence-memory:check`
-только если Gradle distribution и нужные зависимости уже закешированы.
-Root `check` additionally runs `modulePathContractTest` against the produced installation; classpath
-contract runners do not prove JPMS encapsulation.
+Проверки используют обычный Gradle `Test` task и JUnit Jupiter; `check` запускает их автоматически.
+HTML/XML отчеты находятся в `<project>/build/reports/tests/test/` и
+`<project>/build/test-results/test/`. Для выборочного запуска используйте Gradle `--tests`, как в
+примерах выше. Офлайн-проверка: `./gradlew --offline :application:check :core:check :integrations:check :integrations-moex:check :integrations-cbr:check :persistence-memory:check`
+— только если Gradle distribution и нужные зависимости, включая JUnit и JaCoCo, уже закешированы.
+Root `test` зависит от `installDist`; реальные `java`/`javac` subprocesses JUnit-suite запускают
+произведенный distribution и fixtures на module path. Сам тестовый JVM и `compileTestJava` остаются
+на classpath (`inferModulePath = false`), поэтому обычные classpath tests не доказывают JPMS
+encapsulation; `opens` и `--add-opens` не используются.
+Стандартные `test`/`check` создают per-module JaCoCo HTML/XML reports в
+`<project>/build/reports/jacoco/test/`. `./gradlew jacocoAggregateReport` запускает все семь test
+tasks; общий HTML/XML отчет находится в `build/reports/jacoco/jacocoAggregateReport/`. JaCoCo
+использует tool version 0.8.13. Root java/javac module-path subprocesses не instrumented и не
+учитываются в coverage.
 
 ## Документация
 

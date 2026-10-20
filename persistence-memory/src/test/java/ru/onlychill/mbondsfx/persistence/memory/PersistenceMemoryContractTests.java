@@ -12,6 +12,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Test;
 import ru.onlychill.mbondsfx.application.port.DuplicateOperationException;
 import ru.onlychill.mbondsfx.application.port.LedgerCommit;
 import ru.onlychill.mbondsfx.application.port.LedgerConcurrencyException;
@@ -33,42 +34,34 @@ import ru.onlychill.mbondsfx.core.ledger.OperationResult;
 import ru.onlychill.mbondsfx.core.ledger.Position;
 import ru.onlychill.mbondsfx.core.money.Money;
 
-public final class PersistenceMemoryContractTests {
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class PersistenceMemoryContractTests {
     private static final Currency RUB = Currency.getInstance("RUB");
     private static final Currency USD = Currency.getInstance("USD");
     private static final LocalDate DAY = LocalDate.of(2026, 10, 20);
-    private static int checks;
 
-    private PersistenceMemoryContractTests() { }
-
-    public static void main(String[] args) throws Exception {
-        testFactoryAndEmptyLoad();
-        testRichAccountingRoundTripAndExactValues();
-        testDuplicateAndStaleCas();
-        testBeforeAfterAndPolicyValidation();
-        testSameDateSequenceBackdateAndImmutableReads();
-        testPortfolioIsolation();
-        testConcurrentCommitCasIsAtomic();
-        System.out.println("PersistenceMemoryContractTests: " + checks + " checks passed");
-    }
-
-    private static void testFactoryAndEmptyLoad() {
+    @Test
+    void factoryAndEmptyLoad() {
         InMemoryRepositoryFactory factory = new InMemoryRepositoryFactory();
         PortfolioId portfolio = portfolio("factory");
         LedgerRepository first = factory.create(RepositoryConfig.empty());
         LedgerRepository second = factory.create(RepositoryConfig.empty());
-        check(factory.providerId().equals("memory"), "factory has stable memory provider ID");
-        check(first.load(portfolio).isEmpty() && first.operations(portfolio).isEmpty(),
+        assertEquals("memory", factory.providerId(), "factory has stable memory provider ID");
+        assertTrue(first.load(portfolio).isEmpty() && first.operations(portfolio).isEmpty(),
                 "new repository begins empty");
-        check(second.load(portfolio).isEmpty(), "each factory call returns an isolated repository");
-        expectThrows(IllegalArgumentException.class,
+        assertTrue(second.load(portfolio).isEmpty(), "each factory call returns an isolated repository");
+        assertThrows(IllegalArgumentException.class,
                 () -> factory.create(new RepositoryConfig(Map.of("path", "ignored"))),
                 "unsupported memory settings are rejected explicitly");
-        check(new InMemoryRepositoryFactory().providerId().equals(factory.providerId()),
+        assertEquals(factory.providerId(), new InMemoryRepositoryFactory().providerId(),
                 "public no-argument factory has consistent identity");
     }
 
-    private static void testRichAccountingRoundTripAndExactValues() {
+    @Test
+    void richAccountingRoundTripAndExactValues() {
         PortfolioId portfolio = portfolio("rich-chain");
         LedgerRepository repository = repository();
         LedgerApplicationService service = new LedgerApplicationService(repository);
@@ -78,32 +71,32 @@ public final class PersistenceMemoryContractTests {
                 portfolio, RUB, money("10000.000", RUB));
         direct = direct.apply(opening);
         LedgerSnapshot snapshot = service.apply(portfolio, false, opening);
-        check(snapshot.state().equals(direct.state()), "RUB opening matches direct apply");
+        assertEquals(direct.state(), snapshot.state(), "RUB opening matches direct apply");
 
         OperationResult usdOpening = BondOperations.opening(id("chain-open-usd"), DAY,
                 portfolio, USD, money("12.345", USD));
         direct = direct.apply(usdOpening);
         snapshot = service.apply(portfolio, false, usdOpening);
-        check(snapshot.state().equals(direct.state()), "same-date second-currency opening matches direct apply");
+        assertEquals(direct.state(), snapshot.state(), "same-date second-currency opening matches direct apply");
 
         Position empty = Position.empty(new PositionId(portfolio, new SecurityId("SU-MEMORY-1")), RUB);
         OperationResult buy = BondOperations.buy(id("chain-buy"), DAY.plusDays(1), empty,
                 10, money("95.005", RUB), money("2.005", RUB), money("100.005", RUB), money("0.015", RUB));
         direct = direct.apply(buy);
         snapshot = service.apply(portfolio, false, buy);
-        check(snapshot.state().equals(direct.state()), "buy snapshot restores to direct ledger state");
+        assertEquals(direct.state(), snapshot.state(), "buy snapshot restores to direct ledger state");
 
         OperationResult coupon = BondOperations.coupon(id("chain-coupon"), DAY.plusDays(2),
                 buy.positionAfter().orElseThrow(), money("25.075", RUB), Optional.of(money("0.005", RUB)));
         direct = direct.apply(coupon);
         snapshot = service.apply(portfolio, false, coupon);
-        check(snapshot.state().equals(direct.state()), "coupon snapshot restores to direct ledger state");
+        assertEquals(direct.state(), snapshot.state(), "coupon snapshot restores to direct ledger state");
 
         OperationResult amortization = BondOperations.amortization(id("chain-amort"), DAY.plusDays(3),
                 coupon.positionAfter().orElseThrow(), money("500.025", RUB), money("500.005", RUB), Optional.empty());
         direct = direct.apply(amortization);
         snapshot = service.apply(portfolio, false, amortization);
-        check(snapshot.state().equals(direct.state()), "amortization snapshot restores to direct ledger state");
+        assertEquals(direct.state(), snapshot.state(), "amortization snapshot restores to direct ledger state");
 
         OperationResult sale = BondOperations.sell(id("chain-sell"), DAY.plusDays(4),
                 amortization.positionAfter().orElseThrow(), 10, money("100.005", RUB),
@@ -111,27 +104,28 @@ public final class PersistenceMemoryContractTests {
         direct = direct.apply(sale);
         snapshot = service.apply(portfolio, false, sale);
         Ledger restored = Ledger.restore(repository.load(portfolio).orElseThrow().state());
-        check(snapshot.state().equals(direct.state()) && restored.state().equals(direct.state()),
+        assertTrue(snapshot.state().equals(direct.state()) && restored.state().equals(direct.state()),
                 "buy/coupon/amortization/sell load-restore chain matches direct apply");
-        check(snapshot.version() == 6 && snapshot.lastSequence() == 6,
-                "version and per-portfolio sequence advance once per operation");
-        check(snapshot.state().balances().get(account(portfolio, AccountKind.CASH, RUB))
-                        .currency().equals(RUB), "RUB account retains its currency identity");
-        check(snapshot.state().balances().get(account(portfolio, AccountKind.CASH, USD))
+        assertEquals(6, snapshot.version(), "version advances once per operation");
+        assertEquals(6, snapshot.lastSequence(), "per-portfolio sequence advances once per operation");
+        assertEquals(RUB, snapshot.state().balances().get(account(portfolio, AccountKind.CASH, RUB)).currency(),
+                "RUB account retains its currency identity");
+        assertTrue(snapshot.state().balances().get(account(portfolio, AccountKind.CASH, USD))
                         .amount().compareTo(new BigDecimal("12.345")) == 0,
                 "exact USD BigDecimal value survives snapshot load");
 
         List<OperationRecord> records = repository.operations(portfolio);
-        check(records.size() == 6, "journal contains each committed operation");
+        assertEquals(6, records.size(), "journal contains each committed operation");
         for (int i = 0; i < records.size(); i++) {
-            check(records.get(i).sequence() == i + 1L, "journal sequence is contiguous and monotonic");
+            assertEquals(i + 1L, records.get(i).sequence(), "journal sequence is contiguous and monotonic");
         }
-        check(records.get(0).date().equals(DAY) && records.get(1).date().equals(DAY)
+        assertTrue(records.get(0).date().equals(DAY) && records.get(1).date().equals(DAY)
                         && records.get(0).sequence() < records.get(1).sequence(),
                 "same-date records are ordered by sequence");
     }
 
-    private static void testDuplicateAndStaleCas() {
+    @Test
+    void duplicateCommitsAreRejectedWithoutMutation() {
         PortfolioId portfolio = portfolio("duplicate-cas");
         LedgerRepository repository = repository();
         LedgerApplicationService service = new LedgerApplicationService(repository);
@@ -143,14 +137,23 @@ public final class PersistenceMemoryContractTests {
         repository.commit(originalCommit);
         LedgerSnapshot beforeDuplicate = repository.load(portfolio).orElseThrow();
         List<OperationRecord> journalBeforeDuplicate = repository.operations(portfolio);
-        expectThrows(DuplicateOperationException.class, () -> repository.commit(originalCommit),
+        assertThrows(DuplicateOperationException.class, () -> repository.commit(originalCommit),
                 "duplicate is detected before stale expected-version rejection");
-        check(repository.load(portfolio).orElseThrow().equals(beforeDuplicate)
+        assertTrue(repository.load(portfolio).orElseThrow().equals(beforeDuplicate)
                         && repository.operations(portfolio).equals(journalBeforeDuplicate),
                 "duplicate commit leaves snapshot and journal unchanged");
-        expectThrows(DuplicateOperationException.class, () -> service.apply(portfolio, false, opening),
+        assertThrows(DuplicateOperationException.class, () -> service.apply(portfolio, false, opening),
                 "duplicate after load uses typed duplicate error");
+    }
 
+    @Test
+    void staleCasIsRejectedWithoutMutation() {
+        PortfolioId portfolio = portfolio("stale-cas");
+        LedgerRepository repository = repository();
+        LedgerApplicationService service = new LedgerApplicationService(repository);
+        OperationResult opening = BondOperations.opening(id("stale-open"), DAY,
+                portfolio, RUB, money("100", RUB));
+        service.apply(portfolio, false, opening);
         LedgerSnapshot current = repository.load(portfolio).orElseThrow();
         OperationResult staleOperation = BondOperations.deposit(id("stale-candidate"), DAY.plusDays(1),
                 portfolio, RUB, money("1", RUB));
@@ -160,16 +163,17 @@ public final class PersistenceMemoryContractTests {
         service.apply(portfolio, false, winner);
         LedgerSnapshot afterWinner = repository.load(portfolio).orElseThrow();
         List<OperationRecord> journalAfterWinner = repository.operations(portfolio);
-        LedgerConcurrencyException conflict = expectThrows(LedgerConcurrencyException.class,
+        LedgerConcurrencyException conflict = assertThrows(LedgerConcurrencyException.class,
                 () -> repository.commit(stale), "stale expected version is rejected");
-        check(conflict.expectedVersion() == 1 && conflict.actualVersion() == 2,
-                "CAS error exposes expected and actual versions");
-        check(repository.load(portfolio).orElseThrow().equals(afterWinner)
+        assertEquals(1, conflict.expectedVersion(), "CAS error exposes expected version");
+        assertEquals(2, conflict.actualVersion(), "CAS error exposes actual version");
+        assertTrue(repository.load(portfolio).orElseThrow().equals(afterWinner)
                         && repository.operations(portfolio).equals(journalAfterWinner),
                 "stale commit has no partial snapshot or journal effect");
     }
 
-    private static void testBeforeAfterAndPolicyValidation() {
+    @Test
+    void beforeAfterAndPolicyValidation() {
         PortfolioId portfolio = portfolio("forged-before");
         LedgerRepository repository = repository();
         LedgerApplicationService service = new LedgerApplicationService(repository);
@@ -183,22 +187,24 @@ public final class PersistenceMemoryContractTests {
         LedgerState wrongPolicyBefore = Ledger.open(portfolio, true).apply(opening).state();
         LedgerState wrongPolicyAfter = Ledger.restore(wrongPolicyBefore).apply(deposit).state();
         LedgerCommit forgedBefore = new LedgerCommit(actual.version(), wrongPolicyBefore, deposit, wrongPolicyAfter);
-        expectThrows(LedgerConcurrencyException.class, () -> repository.commit(forgedBefore),
+        assertThrows(LedgerConcurrencyException.class, () -> repository.commit(forgedBefore),
                 "matching version cannot authorize a forged before-state or policy");
-        check(repository.load(portfolio).orElseThrow().equals(actual), "before-state mismatch leaves repository unchanged");
+        assertEquals(actual, repository.load(portfolio).orElseThrow(),
+                "before-state mismatch leaves repository unchanged");
 
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new LedgerCommit(actual.version(), actual.state(), deposit, actual.state()),
                 "commit rejects an after-state unrelated to Ledger.apply");
-        expectThrows(IllegalStateException.class,
+        assertThrows(IllegalStateException.class,
                 () -> service.apply(portfolio, true, deposit),
                 "service does not silently change a persisted cash policy");
-        check(repository.load(portfolio).orElseThrow().equals(actual)
+        assertTrue(repository.load(portfolio).orElseThrow().equals(actual)
                         && repository.operations(portfolio).size() == 1,
                 "invalid after-state and policy attempts do not mutate persisted state");
     }
 
-    private static void testSameDateSequenceBackdateAndImmutableReads() {
+    @Test
+    void sameDateSequenceBackdateAndImmutableReads() {
         PortfolioId portfolio = portfolio("same-date");
         LedgerRepository repository = repository();
         LedgerApplicationService service = new LedgerApplicationService(repository);
@@ -211,31 +217,32 @@ public final class PersistenceMemoryContractTests {
                 BondOperations.deposit(id("same-deposit-b"), DAY, portfolio, RUB, money("2", RUB)));
         LedgerSnapshot snapshot = repository.load(portfolio).orElseThrow();
         List<OperationRecord> journal = repository.operations(portfolio);
-        check(snapshot.version() == 3 && snapshot.lastSequence() == 3,
-                "same-date commits preserve monotonic version and sequence");
-        check(journal.get(1).operation().equals(id("same-deposit-a"))
+        assertEquals(3, snapshot.version(), "same-date commits preserve monotonic version");
+        assertEquals(3, snapshot.lastSequence(), "same-date commits preserve monotonic sequence");
+        assertTrue(journal.get(1).operation().equals(id("same-deposit-a"))
                         && journal.get(2).operation().equals(id("same-deposit-b")),
                 "same-date journal order follows committed sequence");
 
-        expectThrows(IllegalStateException.class,
+        assertThrows(IllegalStateException.class,
                 () -> service.apply(portfolio, false, BondOperations.deposit(id("backdated"),
                         DAY.minusDays(1), portfolio, RUB, money("1", RUB))),
                 "backdated operation is rejected by the unchanged core ledger invariant");
-        check(repository.load(portfolio).orElseThrow().equals(snapshot)
+        assertTrue(repository.load(portfolio).orElseThrow().equals(snapshot)
                         && repository.operations(portfolio).equals(journal),
                 "backdate rejection leaves repository state unchanged");
 
-        expectThrows(UnsupportedOperationException.class, () -> journal.clear(),
+        assertThrows(UnsupportedOperationException.class, () -> journal.clear(),
                 "journal list is immutable");
-        expectThrows(UnsupportedOperationException.class, () -> snapshot.state().balances().clear(),
+        assertThrows(UnsupportedOperationException.class, () -> snapshot.state().balances().clear(),
                 "loaded snapshot balances are immutable");
-        expectThrows(UnsupportedOperationException.class,
+        assertThrows(UnsupportedOperationException.class,
                 () -> snapshot.state().postingsByDate().firstEntry().getValue().clear(),
                 "loaded snapshot history lists are immutable");
-        check(beforeLast.lastSequence() == 2, "previous immutable snapshot remains unchanged");
+        assertEquals(2, beforeLast.lastSequence(), "previous immutable snapshot remains unchanged");
     }
 
-    private static void testPortfolioIsolation() {
+    @Test
+    void portfolioIsolation() {
         InMemoryRepositoryFactory factory = new InMemoryRepositoryFactory();
         LedgerRepository repository = factory.create(RepositoryConfig.empty());
         LedgerApplicationService service = new LedgerApplicationService(repository);
@@ -247,19 +254,22 @@ public final class PersistenceMemoryContractTests {
         LedgerSnapshot firstSnapshot = repository.load(first).orElseThrow();
         service.apply(second, false, BondOperations.opening(sharedId, DAY, second, RUB, money("20", RUB)));
         LedgerSnapshot secondSnapshot = repository.load(second).orElseThrow();
-        check(firstSnapshot.version() == 1 && secondSnapshot.version() == 1,
-                "versions and sequences are independent per portfolio");
-        check(firstSnapshot.state().balances().get(account(first, AccountKind.CASH, RUB)).equals(money("10", RUB))
+        assertEquals(1, firstSnapshot.version(), "first portfolio version is independent");
+        assertEquals(1, secondSnapshot.version(), "second portfolio version is independent");
+        assertEquals(1, firstSnapshot.lastSequence(), "first portfolio sequence is independent");
+        assertEquals(1, secondSnapshot.lastSequence(), "second portfolio sequence is independent");
+        assertTrue(firstSnapshot.state().balances().get(account(first, AccountKind.CASH, RUB)).equals(money("10", RUB))
                         && secondSnapshot.state().balances().get(account(second, AccountKind.CASH, RUB))
                         .equals(money("20", RUB)),
                 "same operation ID in different portfolios does not collide");
-        check(repository.operations(first).size() == 1 && repository.operations(second).size() == 1,
-                "journal queries remain portfolio-scoped");
-        check(factory.create(RepositoryConfig.empty()).load(first).isEmpty(),
+        assertEquals(1, repository.operations(first).size(), "first journal query is portfolio-scoped");
+        assertEquals(1, repository.operations(second).size(), "second journal query is portfolio-scoped");
+        assertTrue(factory.create(RepositoryConfig.empty()).load(first).isEmpty(),
                 "separate repository instances do not share state");
     }
 
-    private static void testConcurrentCommitCasIsAtomic() throws Exception {
+    @Test
+    void concurrentCommitCasIsAtomic() throws Exception {
         PortfolioId portfolio = portfolio("parallel-cas");
         LedgerRepository repository = repository();
         LedgerApplicationService service = new LedgerApplicationService(repository);
@@ -282,7 +292,7 @@ public final class PersistenceMemoryContractTests {
         try {
             Future<?> firstResult = executor.submit(() -> contend(repository, first, ready, start, successes, conflicts));
             Future<?> secondResult = executor.submit(() -> contend(repository, second, ready, start, successes, conflicts));
-            check(ready.await(10, TimeUnit.SECONDS), "both same-version writers reach barrier");
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "both same-version writers reach barrier");
             start.countDown();
             firstResult.get(10, TimeUnit.SECONDS);
             secondResult.get(10, TimeUnit.SECONDS);
@@ -294,16 +304,17 @@ public final class PersistenceMemoryContractTests {
 
         LedgerSnapshot after = repository.load(portfolio).orElseThrow();
         List<OperationRecord> journal = repository.operations(portfolio);
-        check(successes.get() == 1 && conflicts.get() == 1,
-                "exactly one concurrent same-version commit succeeds");
-        check(after.version() == 2 && after.lastSequence() == 2 && journal.size() == 2,
-                "concurrent CAS publishes one complete snapshot and journal entry");
+        assertEquals(1, successes.get(), "exactly one concurrent same-version commit succeeds");
+        assertEquals(1, conflicts.get(), "the other concurrent same-version commit conflicts");
+        assertEquals(2, after.version(), "concurrent CAS publishes one new snapshot version");
+        assertEquals(2, after.lastSequence(), "concurrent CAS publishes one new sequence");
+        assertEquals(2, journal.size(), "concurrent CAS publishes one journal entry");
         BigDecimal winningCash = after.state().balances().get(account(portfolio, AccountKind.CASH, RUB)).amount();
-        check(after.state().operationIds().size() == 2
+        assertTrue(after.state().operationIds().size() == 2
                         && (winningCash.compareTo(new BigDecimal("101")) == 0
                         || winningCash.compareTo(new BigDecimal("102")) == 0),
                 "losing writer contributes no partial operation or balance");
-        check(journal.get(1).operation().equals(id("parallel-one"))
+        assertTrue(journal.get(1).operation().equals(id("parallel-one"))
                         || journal.get(1).operation().equals(id("parallel-two")),
                 "journal contains only the winning concurrent operation");
     }
@@ -342,24 +353,5 @@ public final class PersistenceMemoryContractTests {
     private static OperationId id(String value) { return new OperationId(value); }
     private static Money money(String value, Currency currency) {
         return new Money(new BigDecimal(value), currency);
-    }
-
-    private static void check(boolean condition, String message) {
-        checks++;
-        if (!condition) throw new AssertionError(message);
-    }
-
-    private static <T extends Throwable> T expectThrows(Class<T> expected, Runnable action, String message) {
-        try {
-            action.run();
-        } catch (Throwable thrown) {
-            if (expected.isInstance(thrown)) {
-                checks++;
-                return expected.cast(thrown);
-            }
-            throw new AssertionError(message + ": expected " + expected.getName()
-                    + " but got " + thrown.getClass().getName(), thrown);
-        }
-        throw new AssertionError(message + ": expected " + expected.getName());
     }
 }

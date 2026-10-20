@@ -3,15 +3,20 @@ package ru.onlychill.mbondsfx.application;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.junit.jupiter.api.Test;
 
-/** Dependency-free source and Gradle guards for the current six-module topology. */
-public final class ApplicationArchitectureContractTests {
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+/** Source and Gradle guards for the current six-module topology. */
+class ApplicationArchitectureContractTests {
     private static final String ROOT = "ru.onlychill.mbondsfx";
     private static final String CORE = ROOT + ".core";
     private static final String APPLICATION = ROOT + ".application";
@@ -119,59 +124,67 @@ public final class ApplicationArchitectureContractTests {
     private static final Pattern OPENS = Pattern.compile("\\bopens\\s+[\\w.]+(?:\\s+to\\s+[^;]+)?;");
     private static final Pattern PROJECT_DEPENDENCY = Pattern.compile(
             "(?m)^[ \\t]*([A-Za-z][\\w]*)[ \\t]*(?:\\([ \\t]*)?project\\(['\"]:([\\w-]+)['\"]\\)[ \\t]*\\)?");
-    private static int checks;
 
-    private ApplicationArchitectureContractTests() {
+    @Test
+    void negativeFixturesRejectForbiddenEdges() {
+        assertForbiddenEdgeFixtures();
     }
 
-    public static void main(String[] args) throws IOException {
-        negativeFixturesRejectForbiddenEdges();
+    @Test
+    void productionSourcesRespectPackageAndImportBoundaries() throws IOException {
         for (String module : SOURCE_PROPERTIES.keySet()) {
             scanModuleSources(module);
         }
+    }
+
+    @Test
+    void gradleDependenciesMatchAllowedTopology() throws IOException {
         for (String module : BUILD_PROPERTIES.keySet()) {
             checkGradleDependencies(module);
         }
-        checkModuleDescriptors();
-        System.out.println("ApplicationArchitectureContractTests: " + checks + " checks passed");
     }
 
-    private static void negativeFixturesRejectForbiddenEdges() {
-        check(!isImportAllowed("core", APPLICATION + ".port.BondReferenceDataSource"),
+    @Test
+    void moduleDescriptorsMatchDeclaredContracts() throws IOException {
+        checkModuleDescriptors();
+    }
+
+    private static void assertForbiddenEdgeFixtures() {
+        assertFalse(isImportAllowed("core", APPLICATION + ".port.BondReferenceDataSource"),
                 "negative fixture: core cannot import application");
-        check(!isImportAllowed("application", INTEGRATIONS + ".provider.ProviderContext"),
+        assertFalse(isImportAllowed("application", INTEGRATIONS + ".provider.ProviderContext"),
                 "negative fixture: application cannot import integration provider SPI");
-        check(!isImportAllowed("application", INTEGRATIONS + ".adapter.StaticFixings"),
+        assertFalse(isImportAllowed("application", INTEGRATIONS + ".adapter.StaticFixings"),
                 "negative fixture: application cannot import integration adapters");
-        check(!isImportAllowed("application", MEMORY + ".InMemoryLedgerRepository"),
+        assertFalse(isImportAllowed("application", MEMORY + ".InMemoryLedgerRepository"),
                 "negative fixture: application cannot import persistence implementation");
-        check(!isImportAllowed("application", "com.example.external.Client"),
+        assertFalse(isImportAllowed("application", "com.example.external.Client"),
                 "negative fixture: application cannot import non-JDK/non-core dependencies");
-        check(!isImportAllowed("integrations-moex", CBR + ".internal.CbrIndexAdapter"),
+        assertFalse(isImportAllowed("integrations-moex", CBR + ".internal.CbrIndexAdapter"),
                 "negative fixture: MOEX cannot import the CBR provider implementation");
-        check(!isImportAllowed("root", INTEGRATIONS + ".transport.Transport"),
+        assertFalse(isImportAllowed("root", INTEGRATIONS + ".transport.Transport"),
                 "negative fixture: root cannot import shared transport internals");
-        check(!isImportAllowed("root", INTEGRATIONS + ".marketdata.model.BondMarketData"),
+        assertFalse(isImportAllowed("root", INTEGRATIONS + ".marketdata.model.BondMarketData"),
                 "negative fixture: root cannot import MOEX raw data");
-        check(!isImportAllowed("root", MOEX + ".internal.MoexBondAdapter"),
+        assertFalse(isImportAllowed("root", MOEX + ".internal.MoexBondAdapter"),
                 "negative fixture: root cannot import MOEX implementation");
-        check(!isImportAllowed("root", CBR + ".internal.CbrIndexAdapter"),
+        assertFalse(isImportAllowed("root", CBR + ".internal.CbrIndexAdapter"),
                 "negative fixture: root cannot import CBR implementation");
-        check(!isAllowedProjectDependency("application", "implementation", ":integrations"),
+        assertFalse(isAllowedProjectDependency("application", "implementation", ":integrations"),
                 "negative fixture: application Gradle cannot depend on integrations");
-        check(!isAllowedProjectDependency("core", "implementation", ":application"),
+        assertFalse(isAllowedProjectDependency("core", "implementation", ":application"),
                 "negative fixture: core Gradle cannot depend on application");
-        check(!isAllowedProjectDependency("integrations-moex", "implementation", ":application"),
+        assertFalse(isAllowedProjectDependency("integrations-moex", "implementation", ":application"),
                 "negative fixture: provider Gradle depends directly only on shared integrations");
-        check(!isAllowedProjectDependency("root", "implementation", ":integrations-moex"),
+        assertFalse(isAllowedProjectDependency("root", "implementation", ":integrations-moex"),
                 "negative fixture: providers are runtime-only from root");
-        check(!isAllowedProjectDependency("root", "runtimeOnly", ":application"),
+        assertFalse(isAllowedProjectDependency("root", "runtimeOnly", ":application"),
                 "negative fixture: root contracts are compile dependencies, not runtime-only");
-        check(!exportsMatch("integrations", Set.of(INTEGRATIONS + ".transport to " + ROOT)),
+        assertFalse(exportsMatch("integrations", Set.of(INTEGRATIONS + ".transport to " + ROOT)),
                 "negative fixture: shared implementation exports cannot name the root");
-        check(!exportsMatch("integrations-moex", Set.of(MOEX + ".internal")),
+        assertFalse(exportsMatch("integrations-moex", Set.of(MOEX + ".internal")),
                 "negative fixture: provider modules export no packages");
-        check(!hasNoOpens("module sample { opens sample.internal; }"),
+        assertFalse(hasNoOpens("module sample { opens sample.internal; }"),
                 "negative fixture: JPMS opens are rejected");
     }
 
@@ -188,14 +201,14 @@ public final class ApplicationArchitectureContractTests {
                     .sorted()
                     .toList();
         }
-        check(!sources.isEmpty(), module + " production source directory is not empty");
+        assertFalse(sources.isEmpty(), module + " production source directory is not empty");
         for (Path source : sources) {
             String contents = Files.readString(source);
             Matcher packageMatcher = PACKAGE.matcher(contents);
             boolean hasPackage = packageMatcher.find();
-            check(hasPackage, source + " has a package declaration");
+            assertTrue(hasPackage, source + " has a package declaration");
             if (hasPackage) {
-                check(isOwnedPackage(module, packageMatcher.group(1)),
+                assertTrue(isOwnedPackage(module, packageMatcher.group(1)),
                         source + " belongs to the " + module + " source packages");
             }
 
@@ -205,7 +218,7 @@ public final class ApplicationArchitectureContractTests {
                 String importedPackage = importedName.endsWith(".*")
                         ? importedName.substring(0, importedName.length() - 2)
                         : importedName;
-                check(isImportAllowed(module, importedPackage),
+                assertTrue(isImportAllowed(module, importedPackage),
                         source + " may import " + importedPackage + " from " + module);
             }
         }
@@ -222,10 +235,9 @@ public final class ApplicationArchitectureContractTests {
         while (dependencies.find()) {
             actual.add(dependencies.group(1) + " :" + dependencies.group(2));
         }
-        check(actual.equals(ALLOWED_PROJECT_DEPENDENCIES.get(module)),
-                module + " Gradle project dependencies match " + ALLOWED_PROJECT_DEPENDENCIES.get(module)
-                        + " (actual: " + actual + ")");
-        check(!contents.contains("--add-exports") && !contents.contains("--add-opens"),
+        assertEquals(ALLOWED_PROJECT_DEPENDENCIES.get(module), actual,
+                module + " Gradle project dependencies match the allowed topology");
+        assertFalse(contents.contains("--add-exports") || contents.contains("--add-opens"),
                 module + " build does not bypass JPMS encapsulation with add-exports/add-opens");
     }
 
@@ -233,15 +245,15 @@ public final class ApplicationArchitectureContractTests {
         for (String module : SOURCE_PROPERTIES.keySet()) {
             Path descriptor = configuredPath(SOURCE_PROPERTIES.get(module).getFirst()).resolve("module-info.java");
             if (!Files.isRegularFile(descriptor)) {
-                check(false, module + " module descriptor exists at " + descriptor);
+                fail(module + " module descriptor exists at " + descriptor);
                 continue;
             }
             String contents = Files.readString(descriptor);
             Matcher moduleMatcher = MODULE.matcher(contents);
             boolean hasModule = moduleMatcher.find();
-            check(hasModule, descriptor + " declares a named module");
+            assertTrue(hasModule, descriptor + " declares a named module");
             if (hasModule) {
-                check(MODULE_NAMES.get(module).equals(moduleMatcher.group(1)),
+                assertEquals(MODULE_NAMES.get(module), moduleMatcher.group(1),
                         descriptor + " declares module " + MODULE_NAMES.get(module));
             }
 
@@ -251,9 +263,8 @@ public final class ApplicationArchitectureContractTests {
             });
             Set<String> expectedRequires = gradleRequires(module);
             expectedRequires.addAll(EXPECTED_JDK_REQUIRES.get(module));
-            check(actualRequires.equals(expectedRequires),
-                    module + " requires clauses align with Gradle and JDK APIs (actual: " + actualRequires
-                            + ", expected: " + expectedRequires + ")");
+            assertEquals(expectedRequires, actualRequires,
+                    module + " requires clauses align with Gradle and JDK APIs");
 
             Set<String> actualExports = matches(EXPORTS, contents, matcher -> {
                 String targets = matcher.group(2);
@@ -264,18 +275,18 @@ public final class ApplicationArchitectureContractTests {
                         .map(String::trim).sorted().toList();
                 return matcher.group(1) + " to " + String.join(", ", targetModules);
             });
-            check(exportsMatch(module, actualExports),
+            assertTrue(exportsMatch(module, actualExports),
                     module + " exports match the exact JPMS boundary (actual: " + actualExports + ")");
-            check(matches(USES, contents, matcher -> matcher.group(1)).equals(EXPECTED_USES.get(module)),
+            assertEquals(EXPECTED_USES.get(module), matches(USES, contents, matcher -> matcher.group(1)),
                     module + " uses only its declared service contracts");
             Set<String> actualProvides = matches(PROVIDES, contents, matcher -> {
                 List<String> providers = java.util.Arrays.stream(matcher.group(2).split(","))
                         .map(String::trim).sorted().toList();
                 return matcher.group(1) + " with " + String.join(", ", providers);
             });
-            check(actualProvides.equals(EXPECTED_PROVIDES.get(module)),
-                    module + " provides only its typed service factory (actual: " + actualProvides + ")");
-            check(hasNoOpens(contents), module + " descriptor does not open packages");
+            assertEquals(EXPECTED_PROVIDES.get(module), actualProvides,
+                    module + " provides only its typed service factory");
+            assertTrue(hasNoOpens(contents), module + " descriptor does not open packages");
         }
     }
 
@@ -368,13 +379,6 @@ public final class ApplicationArchitectureContractTests {
 
     private static boolean isAllowedProjectDependency(String module, String configuration, String target) {
         return ALLOWED_PROJECT_DEPENDENCIES.get(module).contains(configuration + " " + target);
-    }
-
-    private static void check(boolean condition, String message) {
-        checks++;
-        if (!condition) {
-            throw new AssertionError(message);
-        }
     }
 
     private static Path configuredPath(String property) {

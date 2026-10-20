@@ -37,13 +37,15 @@ DTO, HTTP/XML, адаптеры, UI или DB-модели. Не импорти�
 
 ## Тесты
 
-Контрактные проверки — dependency-free Java-классы с `main`, запускаемые задачами `JavaExec`, а не
-JUnit-методами. Добавляйте domain/accounting/architecture assertions в соответствующий runner и
-сохраняйте модульный guard `ArchitectureContractTests`.
+Контрактные проверки запускаются стандартным Gradle `test` на JUnit Jupiter. Добавляйте
+domain/accounting/architecture assertions в соответствующие тесты и сохраняйте модульный guard
+`ArchitectureContractTests`. Тесты компилируются/исполняются на classpath (`compileTestJava` с
+`inferModulePath = false`); они не заменяют root module-path blackbox acceptance.
 
 ```bash
 ./gradlew :core:check
 ./gradlew --offline :core:check
+./gradlew :core:test --tests '*DomainContractTests'
 ```
 
 Offline-флаг использует только уже закешированные Gradle distribution и зависимости; см. также

@@ -83,7 +83,9 @@ DTO, UI- или DB-модели.
 - Доменные модели и коллекции должны оставаться неизменяемыми; сохраняйте проверку дат и другие
   проверяемые инварианты. Не подменяйте неизвестные значения нулем или предполагаемыми правилами
   выпуска.
-- Не добавляйте внешние зависимости и не меняйте финансовое поведение без явного требования.
+- Не добавляйте внешние production-зависимости и не меняйте финансовое поведение без явного
+  требования. Для test/coverage используются JUnit Jupiter 5.12.2, JUnit Platform 1.12.2 и JaCoCo
+  0.8.13; не переносите тестовые библиотеки или JaCoCo agent в production/runtime classpath.
 - Если архитектурную границу намеренно меняют, обновите соответствующие инструкции и документы
   вместе с кодом; не оставляйте их противоречащими новой границе.
 
@@ -98,14 +100,15 @@ DTO, UI- или DB-модели.
   доказана; Apache Commons — пример, не blanket-разрешение на все артефакты или их лицензии.
   Не пишите собственную замену зрелой реализации безопасности, SQL-драйвера или протокола без
   причины.
-- До любого одобренного добавления проверьте точные координаты и версию артефакта, лицензию,
+- До любого одобренного добавления зависимости проверьте точные координаты и версию артефакта, лицензию,
   транзитивные зависимости, встроенные native-компоненты/notices и JPMS module name. Copyleft и
   proprietary-лицензии требуют отдельного явного одобрения; молча добавлять их нельзя.
 - `java.sql` — только JDBC API, не драйвер. Если позднее будет явно одобрено persistence через
   SQLite, потребуется проверенный лёгкий SQLite JDBC driver в persistence adapter, никогда в
   `:core`. Проектные миграции можно рассмотреть отдельно; SQLite и migration stack не реализованы.
-  JPMS descriptors настроены в фазе 4, но classpath JavaExec runners не доказывают module-path
-  encapsulation; для этого требуется blackbox runner и запуск произведенного distribution.
+  JPMS descriptors настроены в фазе 4, но classpath JUnit tests не доказывают module-path
+  encapsulation; для этого root JUnit suite запускает отдельные java/javac subprocesses против
+  произведенного distribution по module path.
 
 ## Сборка и проверки
 
@@ -116,14 +119,26 @@ Gradle обнаруживает установленный JDK 21. Не фикс
 ./gradlew clean build
 ./gradlew :application:check :core:check :integrations:check :integrations-moex:check :integrations-cbr:check :persistence-memory:check
 ./gradlew --offline :application:check :core:check :integrations:check :integrations-moex:check :integrations-cbr:check :persistence-memory:check
+./gradlew :core:test --tests '*DomainContractTests'
+./gradlew :test --tests 'ru.onlychill.mbondsfx.ModulePathContractTests'
+./gradlew jacocoAggregateReport
 ```
 
-Проверки модулей запускают dependency-free JavaExec mains; наличие стандартного JUnit-исполнителя
-не подразумевается. `--offline` запрещает Gradle обращаться к сети и сработает только если
-Gradle distribution и нужные зависимости уже доступны локально; при отсутствующем кеше это не
-заменяет обычную сборку.
-Root `check` дополнительно запускает `modulePathContractTest` против установленного distribution;
-не считайте обычные classpath runners JPMS-доказательством.
+Проверки используют стандартный Gradle `Test` task с JUnit Jupiter и `useJUnitPlatform()`;
+`check` автоматически включает `test`. HTML/XML reports доступны в
+`<project>/build/reports/tests/test/` и `<project>/build/test-results/test/`. `--tests` позволяет
+запускать один тестовый класс или метод. `--offline` запрещает Gradle обращаться к сети и сработает
+только если Gradle distribution и нужные зависимости, включая JUnit и JaCoCo, уже доступны локально; при
+отсутствующем кеше это не заменяет обычную сборку.
+Root `test` зависит от `installDist` и содержит реальный JUnit module-path suite. Тестовый JVM и
+`compileTestJava` остаются на classpath (`inferModulePath = false`); JPMS-доказательство дают его
+java/javac subprocesses, запускающие произведенный distribution/фикстуры на module path, без
+`opens` или `--add-opens`. Обычные classpath tests не являются доказательством encapsulation.
+`test`/`check` создают per-project JaCoCo HTML/XML reports в
+`<project>/build/reports/jacoco/test/`; `jacocoAggregateReport` запускает все семь `test` tasks и
+создает root HTML/XML отчет в `build/reports/jacoco/jacocoAggregateReport/`. JaCoCo использует
+tool version 0.8.13; root java/javac module-path subprocesses не instrumented и не входят в
+coverage данных отчета.
 
 ## Работа в репозитории
 

@@ -14,9 +14,11 @@
 - JPMS descriptor requires только application (core читается транзитивно), provides
   `LedgerRepositoryFactory` и не экспортирует implementation package.
 
-Проверки — dependency-free Java runner через `JavaExec`:
+Проверки запускаются стандартным Gradle `test` task с JUnit Jupiter; `check` запускает их
+автоматически. Module tests остаются classpath-only и не являются JPMS proof:
 
 ```bash
 ./gradlew :persistence-memory:check
 ./gradlew --offline :persistence-memory:check
+./gradlew :persistence-memory:test --tests '*PersistenceMemoryContractTests'
 ```

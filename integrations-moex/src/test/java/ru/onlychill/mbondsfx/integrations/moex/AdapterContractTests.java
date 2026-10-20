@@ -6,68 +6,63 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Test;
 import ru.onlychill.mbondsfx.core.id.SecurityId;
 import ru.onlychill.mbondsfx.integrations.marketdata.model.BondMarketData;
 import ru.onlychill.mbondsfx.integrations.moex.internal.MoexBondAdapter;
 import ru.onlychill.mbondsfx.integrations.transport.Transport;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 /** Offline contract checks for adapters; all network boundaries are replaced with fakes. */
-public final class AdapterContractTests {
+class AdapterContractTests {
     private static final URI MOEX_FIXTURE = URI.create("https://fixture.invalid/iss");
     private static final LocalDate START = LocalDate.of(2026, 1, 1);
-    private static int checks;
-
-    private AdapterContractTests() {
-    }
-
-    public static void main(String[] args) {
-        moexIndependentPaginationAndRawValues();
-        moexUnknownMalformedRepeatedAndInjection();
-        moexRejectsDoctypeAndExternalEntities();
-        System.out.println("MOEX AdapterContractTests: " + checks + " checks passed");
-    }
-
-    private static void moexIndependentPaginationAndRawValues() {
+    @Test
+    void independentPaginationAndRawValues() {
         PagingTransport transport = new PagingTransport();
         MoexBondAdapter adapter = new MoexBondAdapter(transport, MOEX_FIXTURE);
         BondMarketData data = adapter.bond(new SecurityId("SU26238RMFS4")).orElseThrow();
 
-        equal(41, data.coupons().size(), "all coupons paged");
-        equal(22, data.amortizations().size(), "all amortizations paged");
-        equal(21, data.offers().size(), "all offers paged");
-        equal("raw unknown value", data.description().get("FUTURE_FIELD"), "raw unknown description retained");
-        equal(Optional.empty(), data.coupons().getFirst().value(), "empty coupon value absent, not zero");
-        equal(Optional.empty(), data.coupons().getFirst().registryDate(), "absent record date");
-        equal(Optional.empty(), data.coupons().getFirst().valuePercent(), "empty coupon percent");
-        equal("amortization", data.amortizations().getFirst().source(), "raw amortization source");
+        assertEquals(41, data.coupons().size(), "all coupons paged");
+        assertEquals(22, data.amortizations().size(), "all amortizations paged");
+        assertEquals(21, data.offers().size(), "all offers paged");
+        assertEquals("raw unknown value", data.description().get("FUTURE_FIELD"), "raw unknown description retained");
+        assertEquals(Optional.empty(), data.coupons().getFirst().value(), "empty coupon value absent, not zero");
+        assertEquals(Optional.empty(), data.coupons().getFirst().registryDate(), "absent record date");
+        assertEquals(Optional.empty(), data.coupons().getFirst().valuePercent(), "empty coupon percent");
+        assertEquals("amortization", data.amortizations().getFirst().source(), "raw amortization source");
         BondMarketData.OfferRow sentinelOffer = data.offers().stream()
                 .filter(offer -> offer.offerType().equals(Optional.of("Оферта/Погашение")))
                 .findFirst().orElseThrow();
-        equal(Optional.empty(), sentinelOffer.offerDate(), "sentinel offer date absent");
-        equal(Optional.of("Оферта"), data.offers().stream()
+        assertEquals(Optional.empty(), sentinelOffer.offerDate(), "sentinel offer date absent");
+        assertEquals(Optional.of("Оферта"), data.offers().stream()
                 .filter(offer -> offer.offerType().equals(Optional.of("Оферта")))
                 .findFirst().orElseThrow().offerType(), "raw offer type retained");
 
-        equal(List.of(0, 20, 40, 41), transport.offsets("coupons"), "coupon offset follows actual count");
-        equal(List.of(0, 20, 22), transport.offsets("amortizations"), "amortization offset follows actual count");
-        equal(List.of(0, 20, 21), transport.offsets("offers"), "offer offset follows actual count");
-        check(transport.requests.stream().filter(request -> request.uri().getPath().endsWith("bondization.xml"))
+        assertEquals(List.of(0, 20, 40, 41), transport.offsets("coupons"), "coupon offset follows actual count");
+        assertEquals(List.of(0, 20, 22), transport.offsets("amortizations"), "amortization offset follows actual count");
+        assertEquals(List.of(0, 20, 21), transport.offsets("offers"), "offer offset follows actual count");
+        assertTrue(transport.requests.stream().filter(request -> request.uri().getPath().endsWith("bondization.xml"))
                 .allMatch(request -> request.uri().getRawQuery().contains("limit=20")),
                 "each schedule request explicitly asks for limit=20");
     }
 
-    private static void moexUnknownMalformedRepeatedAndInjection() {
+    @Test
+    void unknownMalformedRepeatedAndInjectionCases() {
         Transport unknown = request -> "<document><data id=\"description\"><rows/></data></document>";
-        check(new MoexBondAdapter(unknown, MOEX_FIXTURE).bond(new SecurityId("ZZZZNOPE")).isEmpty(),
+        assertTrue(new MoexBondAdapter(unknown, MOEX_FIXTURE).bond(new SecurityId("ZZZZNOPE")).isEmpty(),
                 "empty description rows identify an unknown security");
 
         Transport malformed = request -> "<document><data id='description'>";
-        expect(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new MoexBondAdapter(malformed, MOEX_FIXTURE).bond(new SecurityId("BAD")),
                 "malformed XML is not interpreted as unknown");
 
         Transport missingBlock = request -> "<document><data id=\"boards\"><rows/></data></document>";
-        expect(IllegalStateException.class,
+        assertThrows(IllegalStateException.class,
                 () -> new MoexBondAdapter(missingBlock, MOEX_FIXTURE).bond(new SecurityId("BAD")),
                 "missing description block is distinct from empty rows");
 
@@ -83,28 +78,29 @@ public final class AdapterContractTests {
             }
             throw new AssertionError("Adapter continued after repeated coupon page");
         };
-        expect(IllegalStateException.class,
+        assertThrows(IllegalStateException.class,
                 () -> new MoexBondAdapter(repeated, MOEX_FIXTURE).bond(new SecurityId("BAD")),
                 "repeated server page fails instead of truncating or looping");
-        equal(2, couponCalls.get(), "repeat is checked on next page");
+        assertEquals(2, couponCalls.get(), "repeat is checked on next page");
 
         AtomicInteger sends = new AtomicInteger();
         Transport noCall = request -> {
             sends.incrementAndGet();
             return "";
         };
-        expect(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new MoexBondAdapter(noCall, MOEX_FIXTURE)
                         .bond(new SecurityId("../securities/ATTACK.xml?iss.only=description")),
                 "SECID cannot inject path or query parameters");
-        equal(0, sends.get(), "invalid SECID rejected before transport");
+        assertEquals(0, sends.get(), "invalid SECID rejected before transport");
     }
 
-    private static void moexRejectsDoctypeAndExternalEntities() {
+    @Test
+    void rejectsDoctypeAndExternalEntities() {
         String doctype = "<!DOCTYPE data [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>"
                 + "<document><data id=\"description\"><rows><row name=\"x\" value=\"&xxe;\"/>"
                 + "</rows></data></document>";
-        expect(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new MoexBondAdapter(request -> doctype, MOEX_FIXTURE)
                         .bond(new SecurityId("XXE")), "DOCTYPE and external entities rejected");
     }
@@ -151,32 +147,6 @@ public final class AdapterContractTests {
             }
         }
         return "";
-    }
-
-    private static void check(boolean condition, String message) {
-        checks++;
-        if (!condition) {
-            throw new AssertionError(message);
-        }
-    }
-
-    private static void equal(Object expected, Object actual, String message) {
-        check(java.util.Objects.equals(expected, actual),
-                message + ": expected <" + expected + "> but was <" + actual + ">");
-    }
-
-    private static <T extends Throwable> T expect(Class<T> expected, Runnable action, String message) {
-        try {
-            action.run();
-        } catch (Throwable thrown) {
-            if (expected.isInstance(thrown)) {
-                checks++;
-                return expected.cast(thrown);
-            }
-            throw new AssertionError(message + ": expected " + expected.getSimpleName() + " but caught " + thrown,
-                    thrown);
-        }
-        throw new AssertionError(message + ": expected " + expected.getSimpleName());
     }
 
     private static final class PagingTransport implements Transport {

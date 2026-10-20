@@ -16,36 +16,6 @@ dependencies {
     api project(':application')
 }
 
-def contractTestRunners = [
-    adapterContractTest: 'ru.onlychill.mbondsfx.integrations.AdapterContractTests',
-    integrationModelContractTest: 'ru.onlychill.mbondsfx.integrations.IntegrationModelContractTests',
-    providerContractTest: 'ru.onlychill.mbondsfx.integrations.ProviderContractTests'
-]
-
-contractTestRunners.each { taskName, runnerClass ->
-    tasks.register(taskName, JavaExec) {
-        group = 'verification'
-        description = "Runs the ${taskName} contract runner."
-        dependsOn tasks.named('testClasses')
-        classpath = sourceSets.test.runtimeClasspath
-        mainClass = runnerClass
-        modularity.inferModulePath = false
-        javaLauncher = javaToolchains.launcherFor {
-            languageVersion = JavaLanguageVersion.of(21)
-        }
-    }
-}
-
 tasks.named('compileTestJava', JavaCompile) {
     modularity.inferModulePath = false
-}
-
-check {
-    dependsOn contractTestRunners.keySet()
-}
-
-// These dependency-free suites have main methods, not JUnit test methods.
-tasks.named('test') {
-    enabled = false
-    dependsOn contractTestRunners.keySet()
 }

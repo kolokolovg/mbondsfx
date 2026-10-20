@@ -16,9 +16,11 @@ the shared `:integrations` contracts and has no third-party dependencies.
   query/fragment, timeout values use positive ISO-8601 `Duration` strings. Reject unknown or invalid
   settings. Defaults are the official CBR SOAP endpoint, 10 seconds connect timeout, and 30 seconds
   request timeout.
-- `CbrProviderContractTests` is a dependency-free JavaExec runner with copied CBR contract
-  assertions and provider/configuration checks. Its fakes must not access live network.
+- `CbrProviderContractTests` is a JUnit Jupiter test class with CBR contract assertions and
+  provider/configuration checks. Its fakes must not access live network. Tests run on the classpath;
+  service binding is established by the root module-path blackbox tests.
 - Its JPMS descriptor requires shared integrations and JDK `java.net.http`/`java.xml`, provides the
   typed index SPI, and exports no implementation package. Service binding needs module-path evidence.
 
-Run `./gradlew --offline :integrations-cbr:check` with JDK 21 for offline validation.
+Run `./gradlew --offline :integrations-cbr:check` with JDK 21 for offline validation. Use
+`./gradlew :integrations-cbr:test --tests '*CbrProviderContractTests'` to filter the JUnit suite.

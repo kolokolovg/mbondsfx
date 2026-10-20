@@ -24,6 +24,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
+import org.junit.jupiter.api.Test;
 import ru.onlychill.mbondsfx.core.id.IndexId;
 import ru.onlychill.mbondsfx.integrations.adapter.StaticFixings;
 import ru.onlychill.mbondsfx.integrations.index.IndexFixing;
@@ -33,20 +34,14 @@ import ru.onlychill.mbondsfx.integrations.transport.HttpTransport;
 import ru.onlychill.mbondsfx.integrations.transport.Transport;
 import ru.onlychill.mbondsfx.integrations.transport.TransportException;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 /** Offline contract checks for adapters; all network boundaries are replaced with fakes. */
-public final class AdapterContractTests {
-    private static int checks;
-
-    private AdapterContractTests() {
-    }
-
-    public static void main(String[] args) {
-        staticFixingsAreImmutableAndExact();
-        httpTransportUsesUtf8TimeoutAndStatusHandling();
-        System.out.println("AdapterContractTests: " + checks + " checks passed");
-    }
-
-    private static void staticFixingsAreImmutableAndExact() {
+class AdapterContractTests {
+    @Test
+    void staticFixingsAreImmutableAndExact() {
         IndexId cpi = new IndexId("CPI");
         LocalDate date = LocalDate.of(2026, 1, 1);
         Map<LocalDate, BigDecimal> dates = new LinkedHashMap<>();
@@ -56,76 +51,49 @@ public final class AdapterContractTests {
         StaticFixings fixings = StaticFixings.of(table);
         dates.put(date.plusDays(1), BigDecimal.TEN);
         table.clear();
-        equal(new BigDecimal("1.023"), fixings.fixing(cpi, date).value(), "copy protects static data");
-        expect(MissingFixingException.class,
+        assertEquals(new BigDecimal("1.023"), fixings.fixing(cpi, date).value(), "copy protects static data");
+        assertThrows(MissingFixingException.class,
                 () -> fixings.fixing(cpi, date.plusDays(1)), "no forward fill in static fixings");
         StaticFixings direct = StaticFixings.of(new IndexFixing(cpi, date, new BigDecimal("0.1023")));
-        equal(new BigDecimal("0.1023"), direct.fixing(cpi, date).value(), "varargs values remain decimal fractions");
+        assertEquals(new BigDecimal("0.1023"), direct.fixing(cpi, date).value(),
+                "varargs values remain decimal fractions");
     }
 
-    private static void httpTransportUsesUtf8TimeoutAndStatusHandling() {
+    @Test
+    void httpTransportUsesUtf8TimeoutAndStatusHandling() {
         RecordingHttpClient client = new RecordingHttpClient(200, "Привет", null);
         HttpTransport transport = new HttpTransport(client, Duration.ofSeconds(7));
         String body = transport.send(new Transport.Request("POST", URI.create("https://fixture.invalid/soap"),
                 Map.of("Content-Type", "text/xml; charset=utf-8", "SOAPAction", "\"action\""), "Привет"));
-        equal("Привет", body, "response decoded as UTF-8");
-        equal(Duration.ofSeconds(7), client.request.timeout().orElseThrow(), "explicit request timeout");
-        equal("Привет", new String(requestBodyBytes(client.request), StandardCharsets.UTF_8),
+        assertEquals("Привет", body, "response decoded as UTF-8");
+        assertEquals(Duration.ofSeconds(7), client.request.timeout().orElseThrow(), "explicit request timeout");
+        assertEquals("Привет", new String(requestBodyBytes(client.request), StandardCharsets.UTF_8),
                 "request encoded as UTF-8");
-        equal("mbondsfx/1.0 (public market-data client)", client.request.headers()
+        assertEquals("mbondsfx/1.0 (public market-data client)", client.request.headers()
                 .firstValue("User-Agent").orElseThrow(), "polite user agent");
 
-        TransportException statusFailure = expect(TransportException.class,
+        TransportException statusFailure = assertThrows(TransportException.class,
                 () -> new HttpTransport(new RecordingHttpClient(503, "status body", null), Duration.ofSeconds(1))
                         .send(Transport.Request.get(URI.create("https://fixture.invalid/fail"))),
                 "non-2xx HTTP status fails");
-        check(statusFailure.getCause() instanceof HttpStatusException,
+        assertTrue(statusFailure.getCause() instanceof HttpStatusException,
                 "non-2xx failure exposes the transport status contract");
         HttpStatusException status = (HttpStatusException) statusFailure.getCause();
-        equal(503, status.statusCode(), "status contract retains response code");
-        equal(URI.create("https://fixture.invalid/fail"), status.uri(), "status contract retains request URI");
-        equal("status body", status.responseBody(), "status contract retains response body");
+        assertEquals(503, status.statusCode(), "status contract retains response code");
+        assertEquals(URI.create("https://fixture.invalid/fail"), status.uri(), "status contract retains request URI");
+        assertEquals("status body", status.responseBody(), "status contract retains response body");
 
         RecordingHttpClient interrupted = new RecordingHttpClient(200, "", new InterruptedException("test"));
         HttpTransport interruptedTransport = new HttpTransport(interrupted, Duration.ofSeconds(1));
+        assertThrows(TransportException.class,
+                () -> interruptedTransport.send(Transport.Request.get(
+                        URI.create("https://fixture.invalid/interrupted"))));
         try {
-            interruptedTransport.send(Transport.Request.get(URI.create("https://fixture.invalid/interrupted")));
-            throw new AssertionError("Expected interrupted transport");
-        } catch (TransportException expected) {
-            check(Thread.currentThread().isInterrupted(), "interruption flag restored");
+            assertTrue(Thread.currentThread().isInterrupted(), "interruption flag restored");
+            Thread.interrupted();
+        } finally {
             Thread.interrupted();
         }
-    }
-
-    private static void check(boolean condition, String message) {
-        checks++;
-        if (!condition) {
-            throw new AssertionError(message);
-        }
-    }
-
-    private static void equal(Object expected, Object actual, String message) {
-        check(java.util.Objects.equals(expected, actual),
-                message + ": expected <" + expected + "> but was <" + actual + ">");
-    }
-
-    private static void decimalEqual(BigDecimal expected, BigDecimal actual, String message) {
-        check(expected.compareTo(actual) == 0,
-                message + ": expected <" + expected + "> but was <" + actual + ">");
-    }
-
-    private static <T extends Throwable> T expect(Class<T> expected, Runnable action, String message) {
-        try {
-            action.run();
-        } catch (Throwable thrown) {
-            if (expected.isInstance(thrown)) {
-                checks++;
-                return expected.cast(thrown);
-            }
-            throw new AssertionError(message + ": expected " + expected.getSimpleName() + " but caught " + thrown,
-                    thrown);
-        }
-        throw new AssertionError(message + ": expected " + expected.getSimpleName());
     }
 
     private static byte[] requestBodyBytes(HttpRequest request) {

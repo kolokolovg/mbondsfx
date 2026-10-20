@@ -7,6 +7,7 @@ import java.util.Currency;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.Test;
 import ru.onlychill.mbondsfx.application.port.BondReference;
 import ru.onlychill.mbondsfx.application.port.BondReferenceDataSource;
 import ru.onlychill.mbondsfx.application.port.DuplicateOperationException;
@@ -26,160 +27,159 @@ import ru.onlychill.mbondsfx.core.ledger.LedgerState;
 import ru.onlychill.mbondsfx.core.ledger.OperationResult;
 import ru.onlychill.mbondsfx.core.money.Money;
 
-public final class ApplicationContractTests {
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class ApplicationContractTests {
     private static final Currency RUB = Currency.getInstance("RUB");
     private static final PortfolioId PORTFOLIO = new PortfolioId("application-contract");
     private static final LocalDate DATE = LocalDate.of(2026, 10, 20);
-    private static int checks;
 
-    private ApplicationContractTests() { }
-
-    public static void main(String[] args) {
-        testReferenceDataPortIsSparseAndImmutable();
-        testServiceForwardsVersionedAppliedTransitions();
-        testFailureDoesNotMutateRepository();
-        testCommitRejectsUnappliedReplacementState();
-        testRepositoryContractsAreTypedAndConfigIsImmutable();
-        System.out.println("ApplicationContractTests: " + checks + " checks passed");
-    }
-
-    private static void testReferenceDataPortIsSparseAndImmutable() {
+    @Test
+    void referenceDataPortIsSparseAndImmutable() {
         SecurityId security = new SecurityId("SU0000000001");
         BondReference reference = new BondReference(security, "source-A", Optional.empty(),
                 Optional.of(new BondReference.ReportedValue(new BigDecimal("1000.000"), "RUB/issue")),
                 Optional.of(new BondReference.NextCoupon(Optional.of(DATE), Optional.empty())));
         BondReferenceDataSource source = requested -> requested.equals(security)
                 ? Optional.of(reference) : Optional.empty();
-        check(source.reference(security).orElseThrow().equals(reference),
+        assertEquals(reference, source.reference(security).orElseThrow(),
                 "source returns sparse source-attributed facts");
-        check(reference.observedOn().isEmpty() && reference.faceValuePerUnit().orElseThrow().unit().equals("RUB/issue"),
+        assertTrue(reference.observedOn().isEmpty() && reference.faceValuePerUnit().orElseThrow().unit().equals("RUB/issue"),
                 "unreported observation date remains absent and unit text is preserved");
-        check(reference.faceValuePerUnit().orElseThrow().value().equals(new BigDecimal("1000.000")),
+        assertEquals(new BigDecimal("1000.000"), reference.faceValuePerUnit().orElseThrow().value(),
                 "reported BigDecimal precision is not rounded or normalized");
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new BondReference(security, " ", Optional.empty(), Optional.empty(), Optional.empty()),
                 "source ID is required");
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new BondReference.ReportedValue(BigDecimal.ONE, " "), "reported unit is required");
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new BondReference.NextCoupon(Optional.empty(), Optional.empty()),
                 "empty next-coupon record is not allowed");
     }
 
-    private static void testServiceForwardsVersionedAppliedTransitions() {
+    @Test
+    void serviceForwardsVersionedAppliedTransitions() {
         InMemoryContractRepository repository = new InMemoryContractRepository();
         LedgerApplicationService service = new LedgerApplicationService(repository);
         OperationResult opening = BondOperations.opening(id("app-open"), DATE, PORTFOLIO, RUB, money("100"));
 
         LedgerSnapshot first = service.apply(PORTFOLIO, false, opening);
         LedgerCommit firstCommit = repository.lastCommit;
-        check(first.version() == 1 && first.lastSequence() == 1, "first commit initializes version and sequence");
-        check(firstCommit.expectedVersion() == 0, "initial commit uses explicit absent version zero");
-        check(firstCommit.before().equals(Ledger.open(PORTFOLIO, false).state()),
+        assertEquals(1, first.version(), "first commit initializes version");
+        assertEquals(1, first.lastSequence(), "first commit initializes sequence");
+        assertEquals(0, firstCommit.expectedVersion(), "initial commit uses explicit absent version zero");
+        assertEquals(Ledger.open(PORTFOLIO, false).state(), firstCommit.before(),
                 "initial commit uses an explicit empty ledger with supplied cash policy");
-        check(firstCommit.after().equals(Ledger.open(PORTFOLIO, false).apply(opening).state()),
+        assertEquals(Ledger.open(PORTFOLIO, false).apply(opening).state(), firstCommit.after(),
                 "service forwards the exact operation-derived after-state");
 
         OperationResult deposit = BondOperations.deposit(id("app-deposit"), DATE, PORTFOLIO, RUB, money("25"));
         LedgerSnapshot second = service.apply(PORTFOLIO, false, deposit);
-        check(repository.lastCommit.expectedVersion() == 1 && second.version() == 2,
-                "next operation uses the loaded expected version");
-        check(second.lastSequence() == 2, "per-portfolio sequence increases once per accepted operation");
-        check(second.state().equals(Ledger.open(PORTFOLIO, false).apply(opening).apply(deposit).state()),
+        assertEquals(1, repository.lastCommit.expectedVersion(), "next operation uses the loaded expected version");
+        assertEquals(2, second.version(), "next operation increments the version");
+        assertEquals(2, second.lastSequence(), "per-portfolio sequence increases once per accepted operation");
+        assertEquals(Ledger.open(PORTFOLIO, false).apply(opening).apply(deposit).state(), second.state(),
                 "service result equals direct immutable domain application");
         List<OperationRecord> journal = repository.operations(PORTFOLIO);
-        check(journal.size() == 2 && journal.get(0).sequence() == 1 && journal.get(1).sequence() == 2,
+        assertEquals(2, journal.size(), "journal contains both operations");
+        assertEquals(1, journal.get(0).sequence(), "journal sequence begins at one");
+        assertEquals(2, journal.get(1).sequence(),
                 "journal keeps same-date operations in sequence order");
-        check(journal.get(0).operation().equals(opening.operation())
-                        && journal.get(1).operation().equals(deposit.operation()),
-                "journal records are derived from the applied domain operations");
+        assertEquals(opening.operation(), journal.get(0).operation(), "journal records the opening operation");
+        assertEquals(deposit.operation(), journal.get(1).operation(), "journal records the deposit operation");
+    }
 
+    @Test
+    void serviceRejectsDuplicateBeforeCommit() {
+        InMemoryContractRepository repository = new InMemoryContractRepository();
+        LedgerApplicationService service = new LedgerApplicationService(repository);
+        OperationResult opening = BondOperations.opening(id("app-duplicate"), DATE, PORTFOLIO, RUB, money("100"));
+        service.apply(PORTFOLIO, false, opening);
         int commitsBeforeDuplicate = repository.commitCalls;
-        expectThrows(DuplicateOperationException.class, () -> service.apply(PORTFOLIO, false, opening),
+        assertThrows(DuplicateOperationException.class, () -> service.apply(PORTFOLIO, false, opening),
                 "duplicate operation IDs surface as a typed error");
-        check(repository.commitCalls == commitsBeforeDuplicate, "duplicate operation is rejected before commit");
+        assertEquals(commitsBeforeDuplicate, repository.commitCalls, "duplicate operation is rejected before commit");
+    }
 
+    @Test
+    void serviceRejectsPersistedPolicyChangeWithoutCommit() {
+        InMemoryContractRepository repository = new InMemoryContractRepository();
+        LedgerApplicationService service = new LedgerApplicationService(repository);
+        OperationResult opening = BondOperations.opening(id("app-policy-open"), DATE, PORTFOLIO, RUB, money("100"));
+        LedgerSnapshot snapshot = service.apply(PORTFOLIO, false, opening);
         int commitsBeforePolicyMismatch = repository.commitCalls;
-        expectThrows(IllegalStateException.class,
+        assertThrows(IllegalStateException.class,
                 () -> service.apply(PORTFOLIO, true,
                         BondOperations.deposit(id("policy-mismatch"), DATE.plusDays(1), PORTFOLIO, RUB, money("1"))),
                 "service never silently changes persisted cash policy");
-        check(repository.commitCalls == commitsBeforePolicyMismatch && repository.snapshot.equals(Optional.of(second)),
-                "policy mismatch does not attempt or mutate a commit");
+        assertEquals(commitsBeforePolicyMismatch, repository.commitCalls,
+                "policy mismatch does not attempt a commit");
+        assertEquals(Optional.of(snapshot), repository.snapshot, "policy mismatch does not mutate the snapshot");
     }
 
-    private static void testFailureDoesNotMutateRepository() {
+    @Test
+    void repositoryCommitFailureDoesNotMutateRepository() {
         InMemoryContractRepository commitFailureRepository = new InMemoryContractRepository();
         commitFailureRepository.failNextCommit = true;
         LedgerApplicationService commitFailureService = new LedgerApplicationService(commitFailureRepository);
         OperationResult opening = BondOperations.opening(id("failed-open"), DATE, PORTFOLIO, RUB, money("10"));
-        expectThrows(IllegalStateException.class,
+        assertThrows(IllegalStateException.class,
                 () -> commitFailureService.apply(PORTFOLIO, false, opening), "repository commit failure propagates");
-        check(commitFailureRepository.snapshot.isEmpty() && commitFailureRepository.operations(PORTFOLIO).isEmpty(),
-                "failed atomic commit leaves repository state and journal unchanged");
+        assertTrue(commitFailureRepository.snapshot.isEmpty(), "failed atomic commit leaves repository state unchanged");
+        assertTrue(commitFailureRepository.operations(PORTFOLIO).isEmpty(),
+                "failed atomic commit leaves the journal unchanged");
+    }
 
+    @Test
+    void domainApplyFailureDoesNotCommit() {
         InMemoryContractRepository applyFailureRepository = new InMemoryContractRepository();
         LedgerApplicationService applyFailureService = new LedgerApplicationService(applyFailureRepository);
         OperationResult overdraft = BondOperations.withdrawal(id("failed-withdrawal"), DATE,
                 PORTFOLIO, RUB, money("10"));
-        expectThrows(IllegalStateException.class,
+        assertThrows(IllegalStateException.class,
                 () -> applyFailureService.apply(PORTFOLIO, false, overdraft),
                 "domain apply failure is returned without committing");
-        check(applyFailureRepository.commitCalls == 0 && applyFailureRepository.snapshot.isEmpty(),
-                "failed domain apply never mutates repository");
+        assertEquals(0, applyFailureRepository.commitCalls, "failed domain apply never attempts commit");
+        assertTrue(applyFailureRepository.snapshot.isEmpty(), "failed domain apply never mutates repository");
     }
 
-    private static void testCommitRejectsUnappliedReplacementState() {
+    @Test
+    void commitRejectsUnappliedReplacementState() {
         LedgerState empty = Ledger.open(PORTFOLIO, false).state();
         OperationResult opening = BondOperations.opening(id("commit-open"), DATE, PORTFOLIO, RUB, money("10"));
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new LedgerCommit(0, empty, opening, empty),
                 "commit cannot inject an unrelated after-state");
         Ledger populated = Ledger.open(PORTFOLIO, false).apply(opening);
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new LedgerCommit(0, populated.state(),
                         BondOperations.deposit(id("commit-deposit"), DATE.plusDays(1), PORTFOLIO, RUB, money("1")),
                         populated.state()),
                 "version zero cannot initialize from a nonempty ledger");
     }
 
-    private static void testRepositoryContractsAreTypedAndConfigIsImmutable() {
-        expectThrows(IllegalArgumentException.class, () -> new LedgerSnapshot(PORTFOLIO, 0, 0,
+    @Test
+    void repositoryContractsAreTypedAndConfigIsImmutable() {
+        assertThrows(IllegalArgumentException.class, () -> new LedgerSnapshot(PORTFOLIO, 0, 0,
                 Ledger.open(PORTFOLIO, false).state()), "empty portfolio is represented by Optional.empty");
-        check(new LedgerConcurrencyException(PORTFOLIO, 4, 5).actualVersion() == 5,
+        assertEquals(5, new LedgerConcurrencyException(PORTFOLIO, 4, 5).actualVersion(),
                 "version conflict exposes actual version");
-        check(new DuplicateOperationException(PORTFOLIO, id("duplicate")).operation().equals(id("duplicate")),
+        assertEquals(id("duplicate"), new DuplicateOperationException(PORTFOLIO, id("duplicate")).operation(),
                 "duplicate operation has a typed identity");
         Map<String, String> settings = new java.util.LinkedHashMap<>();
         settings.put("path", "data.db");
         RepositoryConfig config = new RepositoryConfig(settings);
         settings.clear();
-        check(config.settings().equals(Map.of("path", "data.db")), "repository config copies settings");
-        expectThrows(UnsupportedOperationException.class, () -> config.settings().clear(),
+        assertEquals(Map.of("path", "data.db"), config.settings(), "repository config copies settings");
+        assertThrows(UnsupportedOperationException.class, () -> config.settings().clear(),
                 "repository config settings are immutable");
     }
 
     private static OperationId id(String value) { return new OperationId(value); }
     private static Money money(String amount) { return new Money(new BigDecimal(amount), RUB); }
-
-    private static void check(boolean condition, String message) {
-        checks++;
-        if (!condition) throw new AssertionError(message);
-    }
-
-    private static <T extends Throwable> T expectThrows(Class<T> expected, Runnable action, String message) {
-        try {
-            action.run();
-        } catch (Throwable thrown) {
-            if (expected.isInstance(thrown)) {
-                checks++;
-                return expected.cast(thrown);
-            }
-            throw new AssertionError(message + ": expected " + expected.getName()
-                    + " but got " + thrown.getClass().getName(), thrown);
-        }
-        throw new AssertionError(message + ": expected " + expected.getName());
-    }
 
     private static final class InMemoryContractRepository implements LedgerRepository {
         private Optional<LedgerSnapshot> snapshot = Optional.empty();

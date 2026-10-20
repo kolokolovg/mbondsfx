@@ -23,12 +23,14 @@
   недифференцированное расписание без явного маркера «следующий» или даты `as-of`, поэтому
   `nextCoupon` остается пустым даже при наличии coupon schedule. Не выбирайте первую строку и не
   создавайте `BondDefinition`; не подставляйте единицы, даты или нули.
-- Проверки — dependency-free JavaExec runners в package
+- Проверки — JUnit Jupiter tests в package
   `ru.onlychill.mbondsfx.integrations.moex`, включая MOEX pagination/mapping, XXE/DTD и raw DTO
   assertions. Generic fixing/transport assertions живут в `:integrations`, CBR SOAP/XML/fault
-  assertions — в `:integrations-cbr`:
+  assertions — в `:integrations-cbr`. `compileTestJava` и обычные module tests остаются на classpath;
+  runtime service binding подтверждается root JPMS blackbox suite:
 
 ```bash
 ./gradlew :integrations-moex:check
 ./gradlew --offline :integrations-moex:check
+./gradlew :integrations-moex:test --tests '*MoexProviderContractTests'
 ```

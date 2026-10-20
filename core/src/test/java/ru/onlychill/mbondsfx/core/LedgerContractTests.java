@@ -12,6 +12,7 @@ import java.util.NavigableMap;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import org.junit.jupiter.api.Test;
 import ru.onlychill.mbondsfx.core.id.OperationId;
 import ru.onlychill.mbondsfx.core.id.PortfolioId;
 import ru.onlychill.mbondsfx.core.id.PositionId;
@@ -27,145 +28,141 @@ import ru.onlychill.mbondsfx.core.ledger.Posting;
 import ru.onlychill.mbondsfx.core.ledger.UnbalancedPostingException;
 import ru.onlychill.mbondsfx.core.money.Money;
 
-public final class LedgerContractTests {
-    private static int checks;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+final class LedgerContractTests {
     private static final Currency RUB = Currency.getInstance("RUB");
     private static final Currency USD = Currency.getInstance("USD");
     private static final PortfolioId PF = new PortfolioId("portfolio-1");
     private static final SecurityId SEC = new SecurityId("SU0000000001");
     private static final LocalDate DAY1 = LocalDate.of(2026, 1, 1);
 
-    private LedgerContractTests() { }
-
-    public static void main(String[] args) {
-        scenarioA0OpeningAndCash();
-        scenarioABCDDirtyPurchaseCouponAmortizationAndRedemption();
-        scenarioEExactCentAccruedSplit();
-        scenarioFAccruedSaleAndLoss();
-        testSubMinorProportionalRemovalsAndRetirement();
-        testValidationAndImmutability();
-        testCurrenciesAndPostingBalance();
-        testStateRoundTripAndRestoreValidation();
-        testMultiplePostingsForOneOperationRestore();
-        System.out.println("LedgerContractTests: " + checks + " checks passed");
-    }
-
-    private static void scenarioA0OpeningAndCash() {
+    @Test
+    void openingDepositWithdrawalAndCashConstraints() {
         Ledger ledger = Ledger.open(PF);
         OperationResult opening = BondOperations.opening(id("open"), DAY1, PF, RUB, m("10000"));
-        checkEntries(opening.postings().getFirst(),
+        assertEntries(opening.postings().getFirst(),
                 entry(PF, AccountKind.CASH, null, RUB, "10000"),
                 entry(PF, AccountKind.EQUITY, null, RUB, "-10000"));
         ledger = ledger.apply(opening);
         OperationResult deposit = BondOperations.deposit(id("deposit"), DAY1, PF, RUB, m("500"));
         ledger = ledger.apply(deposit);
         OperationResult withdrawal = BondOperations.withdrawal(id("withdraw"), DAY1, PF, RUB, m("2000"));
-        checkEntries(withdrawal.postings().getFirst(),
+        assertEntries(withdrawal.postings().getFirst(),
                 entry(PF, AccountKind.EQUITY, null, RUB, "2000"),
                 entry(PF, AccountKind.CASH, null, RUB, "-2000"));
         ledger = ledger.apply(withdrawal);
-        check(ledger.balance(account(AccountKind.CASH, null, RUB)).equals(m("8500")),
+        assertEquals(m("8500"), ledger.balance(account(AccountKind.CASH, null, RUB)),
                 "opening/deposit/withdrawal cash total");
-        check(ledger.balance(account(AccountKind.EQUITY, null, RUB)).equals(m("-8500")),
+        assertEquals(m("-8500"), ledger.balance(account(AccountKind.EQUITY, null, RUB)),
                 "equity is the counter-account");
 
-        expectThrows(IllegalStateException.class,
+        assertThrows(IllegalStateException.class,
                 () -> Ledger.open(PF).apply(BondOperations.withdrawal(id("no-cash"), DAY1, PF, RUB, m("1"))),
                 "strict ledger rejects a withdrawal into negative cash");
         Ledger margin = Ledger.open(PF, true).apply(
                 BondOperations.withdrawal(id("margin"), DAY1, PF, RUB, m("2000")));
-        check(margin.cashBalances().get(RUB).equals(m("-2000")), "explicit margin allows negative cash");
+        assertEquals(m("-2000"), margin.cashBalances().get(RUB), "explicit margin allows negative cash");
     }
 
-    private static void scenarioABCDDirtyPurchaseCouponAmortizationAndRedemption() {
+    @Test
+    void dirtyPurchaseCouponAmortizationAndRedemption() {
         Ledger ledger = Ledger.open(PF).apply(BondOperations.opening(id("fund"), DAY1, PF, RUB, m("20000")));
         Position empty = Position.empty(positionId(), RUB);
         OperationResult purchase = BondOperations.buy(id("buy"), DAY1.plusDays(1), empty, 10,
                 m("985"), m("15.20"), m("1000"), m("50"));
-        checkEntries(purchase.postings().getFirst(),
+        assertEntries(purchase.postings().getFirst(),
                 entry(PF, AccountKind.SECURITIES, SEC, RUB, "9850"),
                 entry(PF, AccountKind.ACCRUED_INTEREST, SEC, RUB, "152"),
                 entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "50"),
                 entry(PF, AccountKind.CASH, null, RUB, "-10052"));
         Position position = purchase.positionAfter().orElseThrow();
-        check(position.quantity() == 10 && position.carryingAmount().equals(m("9850"))
-                && position.faceAmount().equals(m("10000"))
-                && position.purchasedAccrued().equals(m("152")), "dirty purchase stores total position amounts");
+        assertEquals(10, position.quantity(), "dirty purchase quantity");
+        assertEquals(m("9850"), position.carryingAmount(), "dirty purchase carrying amount");
+        assertEquals(m("10000"), position.faceAmount(), "dirty purchase face amount");
+        assertEquals(m("152"), position.purchasedAccrued(), "dirty purchase stores purchased accrued");
         Ledger beforePurchase = ledger;
         ledger = ledger.apply(purchase);
-        check(beforePurchase.position(SEC).isEmpty() && beforePurchase.cashBalances().get(RUB).equals(m("20000")),
-                "apply returns a new ledger and leaves the old ledger unchanged");
+        assertTrue(beforePurchase.position(SEC).isEmpty(), "apply leaves the old ledger position unchanged");
+        assertEquals(m("20000"), beforePurchase.cashBalances().get(RUB),
+                "apply leaves the old ledger cash unchanged");
 
         OperationResult coupon = BondOperations.coupon(id("coupon"), DAY1.plusDays(2), position,
                 m("374"), Optional.of(m("48.62")));
-        checkEntries(coupon.postings().getFirst(),
+        assertEntries(coupon.postings().getFirst(),
                 entry(PF, AccountKind.CASH, null, RUB, "325.38"),
                 entry(PF, AccountKind.TAX_EXPENSE, null, RUB, "48.62"),
                 entry(PF, AccountKind.ACCRUED_INTEREST, SEC, RUB, "-152"),
                 entry(PF, AccountKind.COUPON_INCOME, null, RUB, "-222"));
-        check(coupon.positionAfter().orElseThrow().purchasedAccrued().equals(m("0")),
+        assertEquals(m("0"), coupon.positionAfter().orElseThrow().purchasedAccrued(),
                 "coupon releases the purchased accrued asset");
         ledger = ledger.apply(coupon);
-        check(ledger.balance(account(AccountKind.COUPON_INCOME, null, RUB)).equals(m("-222")),
+        assertEquals(m("-222"), ledger.balance(account(AccountKind.COUPON_INCOME, null, RUB)),
                 "only net-of-purchased-accrued coupon is income");
 
         Position afterCoupon = coupon.positionAfter().orElseThrow();
         OperationResult amort = BondOperations.amortization(id("amort"), DAY1.plusDays(3), afterCoupon,
                 m("1000"), m("1000"), Optional.empty());
-        checkEntries(amort.postings().getFirst(),
+        assertEntries(amort.postings().getFirst(),
                 entry(PF, AccountKind.CASH, null, RUB, "1000"),
                 entry(PF, AccountKind.SECURITIES, SEC, RUB, "-985"),
                 entry(PF, AccountKind.AMORTIZATION_GAIN, null, RUB, "-15"));
-        check(amort.positionAfter().orElseThrow().carryingAmount().equals(m("8865"))
-                && amort.positionAfter().orElseThrow().faceAmount().equals(m("9000")),
+        assertEquals(m("8865"), amort.positionAfter().orElseThrow().carryingAmount(),
                 "amortization reduces carrying amount proportionally to face");
+        assertEquals(m("9000"), amort.positionAfter().orElseThrow().faceAmount(),
+                "amortization reduces face amount");
         ledger = ledger.apply(amort);
 
         OperationResult redemption = BondOperations.sell(id("redeem"), DAY1.plusDays(4),
                 amort.positionAfter().orElseThrow(), 10, m("1000"), m("0"), m("0"), Optional.empty());
-        checkEntries(redemption.postings().getFirst(),
+        assertEntries(redemption.postings().getFirst(),
                 entry(PF, AccountKind.CASH, null, RUB, "10000"),
                 entry(PF, AccountKind.SECURITIES, SEC, RUB, "-8865"),
                 entry(PF, AccountKind.REALIZED_PNL, null, RUB, "-1135"));
-        check(redemption.positionAfter().orElseThrow().equals(Position.empty(positionId(), RUB)),
+        assertEquals(Position.empty(positionId(), RUB), redemption.positionAfter().orElseThrow(),
                 "full redemption yields explicit empty position");
         ledger = ledger.apply(redemption);
-        check(ledger.balance(account(AccountKind.SECURITIES, SEC, RUB)).isZero()
+        assertTrue(ledger.balance(account(AccountKind.SECURITIES, SEC, RUB)).isZero()
                 && ledger.balance(account(AccountKind.ACCRUED_INTEREST, SEC, RUB)).isZero(),
                 "after redemption security asset accounts are zero");
-        check(ledger.position(SEC).orElseThrow().quantity() == 0, "ledger retains the explicit empty position");
+        assertEquals(0, ledger.position(SEC).orElseThrow().quantity(), "ledger retains the explicit empty position");
     }
 
-    private static void scenarioEExactCentAccruedSplit() {
+    @Test
+    void exactCentAccruedSplitAcrossPartialSales() {
         Position current = Position.empty(positionId(), RUB);
         OperationResult first = BondOperations.buy(id("lot-a"), DAY1, current, 10,
                 m("100"), m("15.20"), m("1000"), m("0"));
         OperationResult second = BondOperations.buy(id("lot-b"), DAY1.plusDays(1),
                 first.positionAfter().orElseThrow(), 3, m("100"), m("5"), m("1000"), m("0"));
         Position combined = second.positionAfter().orElseThrow();
-        check(combined.purchasedAccrued().equals(m("167")), "two purchases retain total purchased accrued");
+        assertEquals(m("167"), combined.purchasedAccrued(), "two purchases retain total purchased accrued");
         OperationResult partial = BondOperations.sell(id("lot-sell-1"), DAY1.plusDays(2), combined,
                 5, m("100"), m("0"), m("0"), Optional.empty());
         Money firstRelease = entryAmount(partial.postings().getFirst(),
                 account(AccountKind.ACCRUED_INTEREST, SEC, RUB)).negate();
-        check(firstRelease.equals(m("64.23")), "partial sale releases purchased accrued rounded once");
+        assertEquals(m("64.23"), firstRelease, "partial sale releases purchased accrued rounded once");
         Position residual = partial.positionAfter().orElseThrow();
-        check(residual.purchasedAccrued().equals(m("102.77")), "partial-sale exact residual retained");
+        assertEquals(m("102.77"), residual.purchasedAccrued(), "partial-sale exact residual retained");
         OperationResult finalSale = BondOperations.sell(id("lot-sell-2"), DAY1.plusDays(3), residual,
                 8, m("100"), m("0"), m("0"), Optional.empty());
         Money finalRelease = entryAmount(finalSale.postings().getFirst(),
                 account(AccountKind.ACCRUED_INTEREST, SEC, RUB)).negate();
-        check(finalRelease.equals(m("102.77")), "final disposal releases the full exact remainder");
-        check(firstRelease.add(finalRelease).equals(m("167")), "accrued releases sum to original total exactly");
+        assertEquals(m("102.77"), finalRelease, "final disposal releases the full exact remainder");
+        assertEquals(m("167"), firstRelease.add(finalRelease), "accrued releases sum to original total exactly");
     }
 
-    private static void scenarioFAccruedSaleAndLoss() {
+    @Test
+    void accruedSaleAndRealizedLoss() {
         Position empty = Position.empty(positionId(), RUB);
         Position accruedPosition = BondOperations.buy(id("f-buy"), DAY1, empty, 1,
                 m("100"), m("120"), m("1000"), m("0")).positionAfter().orElseThrow();
         OperationResult betweenCouponSale = BondOperations.sell(id("f-sell"), DAY1.plusDays(1),
                 accruedPosition, 1, m("100"), m("200"), m("0"), Optional.empty());
-        checkEntries(betweenCouponSale.postings().getFirst(),
+        assertEntries(betweenCouponSale.postings().getFirst(),
                 entry(PF, AccountKind.CASH, null, RUB, "300"),
                 entry(PF, AccountKind.SECURITIES, SEC, RUB, "-100"),
                 entry(PF, AccountKind.ACCRUED_INTEREST, SEC, RUB, "-120"),
@@ -175,14 +172,15 @@ public final class LedgerContractTests {
         Position lossPosition = new Position(positionId(), 1, m("100"), m("100"), m("0"));
         OperationResult loss = BondOperations.sell(id("loss"), DAY1, lossPosition, 1,
                 m("80"), m("0"), m("0"), Optional.empty());
-        check(entryAmount(loss.postings().getFirst(), account(AccountKind.REALIZED_PNL, null, RUB))
-                .equals(m("20")), "sale below carrying cost debits realized PnL");
-        check(loss.postings().getFirst().entries().stream().noneMatch(e ->
+        assertEquals(m("20"), entryAmount(loss.postings().getFirst(), account(AccountKind.REALIZED_PNL, null, RUB)),
+                "sale below carrying cost debits realized PnL");
+        assertFalse(loss.postings().getFirst().entries().stream().anyMatch(e ->
                 e.account().kind() == AccountKind.REALIZED_PNL && e.amount().isZero()),
                 "zero-valued account lines are omitted");
     }
 
-    private static void testSubMinorProportionalRemovalsAndRetirement() {
+    @Test
+    void subMinorPartialAndFinalSales() {
         Ledger fractionalLedger = Ledger.open(PF).apply(
                 BondOperations.opening(id("fractional-fund"), DAY1, PF, RUB, m("1")));
         Position empty = Position.empty(positionId(), RUB);
@@ -190,40 +188,45 @@ public final class LedgerContractTests {
                 empty, 10, m("0.0009"), m("0.0009"), m("0.0009"), m("0"));
         fractionalLedger = fractionalLedger.apply(fractionalBuy);
         Position original = fractionalBuy.positionAfter().orElseThrow();
-        check(original.carryingAmount().equals(m("0.009"))
-                        && original.purchasedAccrued().equals(m("0.009"))
-                        && original.faceAmount().equals(m("0.009")),
-                "fractional-quote purchase retains sub-minor total assets");
-        checkBalanced(fractionalBuy.postings().getFirst());
+        assertEquals(m("0.009"), original.carryingAmount(), "fractional-quote purchase carrying amount");
+        assertEquals(m("0.009"), original.purchasedAccrued(), "fractional-quote purchase accrued amount");
+        assertEquals(m("0.009"), original.faceAmount(), "fractional-quote purchase face amount");
+        assertBalanced(fractionalBuy.postings().getFirst());
 
         OperationResult partialSale = BondOperations.sell(id("fractional-sell-9"), DAY1.plusDays(2),
                 original, 9, m("0"), m("0"), m("0"), Optional.empty());
         Position afterPartial = partialSale.positionAfter().orElseThrow();
-        check(afterPartial.quantity() == 1 && afterPartial.carryingAmount().isZero()
-                        && afterPartial.purchasedAccrued().isZero() && afterPartial.faceAmount().isZero(),
-                "sub-minor partial sale cannot overdraw carrying, accrued, or face totals");
-        check(entryAmount(partialSale.postings().getFirst(), account(AccountKind.SECURITIES, SEC, RUB))
-                        .equals(m("-0.009"))
-                        && entryAmount(partialSale.postings().getFirst(), account(AccountKind.ACCRUED_INTEREST, SEC, RUB))
-                        .equals(m("-0.009")),
-                "partial sale caps both asset releases at their original totals");
-        check(original.carryingAmount().subtract(afterPartial.carryingAmount()).equals(m("0.009"))
-                        && original.purchasedAccrued().subtract(afterPartial.purchasedAccrued()).equals(m("0.009"))
-                        && original.faceAmount().subtract(afterPartial.faceAmount()).equals(m("0.009")),
-                "sub-minor partial plus residual accounts for each original asset exactly");
-        checkBalanced(partialSale.postings().getFirst());
+        assertEquals(1, afterPartial.quantity(), "sub-minor partial sale leaves one unit");
+        assertTrue(afterPartial.carryingAmount().isZero(), "sub-minor partial sale leaves no carrying amount");
+        assertTrue(afterPartial.purchasedAccrued().isZero(), "sub-minor partial sale leaves no purchased accrued");
+        assertTrue(afterPartial.faceAmount().isZero(), "sub-minor partial sale leaves no face amount");
+        assertEquals(m("-0.009"), entryAmount(partialSale.postings().getFirst(),
+                account(AccountKind.SECURITIES, SEC, RUB)), "partial sale caps the security asset release");
+        assertEquals(m("-0.009"), entryAmount(partialSale.postings().getFirst(),
+                account(AccountKind.ACCRUED_INTEREST, SEC, RUB)), "partial sale caps the accrued asset release");
+        assertEquals(m("0.009"), original.carryingAmount().subtract(afterPartial.carryingAmount()),
+                "sub-minor partial sale accounts for original carrying total exactly");
+        assertEquals(m("0.009"), original.purchasedAccrued().subtract(afterPartial.purchasedAccrued()),
+                "sub-minor partial sale accounts for original accrued total exactly");
+        assertEquals(m("0.009"), original.faceAmount().subtract(afterPartial.faceAmount()),
+                "sub-minor partial sale accounts for original face total exactly");
+        assertBalanced(partialSale.postings().getFirst());
         fractionalLedger = fractionalLedger.apply(partialSale);
-        checkPositionNonnegative(fractionalLedger.position(SEC).orElseThrow());
+        assertPositionNonnegative(fractionalLedger.position(SEC).orElseThrow());
 
         OperationResult finalSale = BondOperations.sell(id("fractional-sell-final"), DAY1.plusDays(3),
                 afterPartial, 1, m("0"), m("0"), m("0"), Optional.empty());
-        check(finalSale.postings().getFirst().entries().isEmpty(),
+        assertTrue(finalSale.postings().getFirst().entries().isEmpty(),
                 "final disposal of already released fractional assets adds no cash or asset movement");
-        checkBalanced(finalSale.postings().getFirst());
+        assertBalanced(finalSale.postings().getFirst());
         fractionalLedger = fractionalLedger.apply(finalSale);
-        check(fractionalLedger.position(SEC).orElseThrow().equals(Position.empty(positionId(), RUB)),
+        assertEquals(Position.empty(positionId(), RUB), fractionalLedger.position(SEC).orElseThrow(),
                 "final sub-minor disposal retires the remaining quantity");
 
+    }
+
+    @Test
+    void subMinorAmortizationDoesNotOverdrawCarryingValue() {
         SecurityId amortSecurity = new SecurityId("SU-TINY-AMORT");
         PositionId amortPositionId = new PositionId(PF, amortSecurity);
         Ledger amortLedger = Ledger.open(PF).apply(
@@ -235,16 +238,20 @@ public final class LedgerContractTests {
         OperationResult tinyAmort = BondOperations.amortization(id("tiny-amort-90"), DAY1.plusDays(2),
                 amortBuy.positionAfter().orElseThrow(), m("0.0081"), m("0.0081"), Optional.empty());
         Position afterTinyAmort = tinyAmort.positionAfter().orElseThrow();
-        check(afterTinyAmort.quantity() == 10 && afterTinyAmort.faceAmount().equals(m("0.0009"))
-                        && afterTinyAmort.carryingAmount().isZero(),
-                "90-percent sub-minor face reduction caps carrying removal and leaves nonnegative residual");
-        check(entryAmount(tinyAmort.postings().getFirst(), account(AccountKind.SECURITIES, amortSecurity, RUB))
-                        .equals(m("-0.009")),
+        assertEquals(10, afterTinyAmort.quantity(), "sub-minor amortization keeps quantity outstanding");
+        assertEquals(m("0.0009"), afterTinyAmort.faceAmount(), "sub-minor amortization caps face reduction");
+        assertTrue(afterTinyAmort.carryingAmount().isZero(), "sub-minor amortization caps carrying removal");
+        assertEquals(m("-0.009"), entryAmount(tinyAmort.postings().getFirst(),
+                account(AccountKind.SECURITIES, amortSecurity, RUB)),
                 "sub-minor partial amortization never credits more carrying value than held");
-        checkBalanced(tinyAmort.postings().getFirst());
+        assertBalanced(tinyAmort.postings().getFirst());
         amortLedger = amortLedger.apply(tinyAmort);
-        checkPositionNonnegative(amortLedger.position(amortSecurity).orElseThrow());
+        assertPositionNonnegative(amortLedger.position(amortSecurity).orElseThrow());
 
+    }
+
+    @Test
+    void fullAmortizationCanBeRetiredWithoutDuplicateCashFlow() {
         SecurityId maturitySecurity = new SecurityId("SU-FULL-AMORT");
         PositionId maturityPositionId = new PositionId(PF, maturitySecurity);
         Ledger maturityLedger = Ledger.open(PF).apply(
@@ -256,28 +263,32 @@ public final class LedgerContractTests {
                 maturityBuy.positionAfter().orElseThrow(), m("100"), m("100"), Optional.empty());
         maturityLedger = maturityLedger.apply(fullAmort);
         Money cashAfterBookedMaturityPayment = maturityLedger.cashBalances().get(RUB);
-        check(fullAmort.positionAfter().orElseThrow().quantity() == 1
-                        && fullAmort.positionAfter().orElseThrow().faceAmount().isZero()
-                        && fullAmort.positionAfter().orElseThrow().carryingAmount().isZero(),
-                "full principal amortization leaves quantity outstanding at zero value");
+        assertEquals(1, fullAmort.positionAfter().orElseThrow().quantity(),
+                "full principal amortization leaves quantity outstanding");
+        assertTrue(fullAmort.positionAfter().orElseThrow().faceAmount().isZero(),
+                "full principal amortization leaves zero face value");
+        assertTrue(fullAmort.positionAfter().orElseThrow().carryingAmount().isZero(),
+                "full principal amortization leaves zero carrying value");
         OperationResult retire = BondOperations.sell(id("maturity-retire"), DAY1.plusDays(3),
                 fullAmort.positionAfter().orElseThrow(), 1, m("0"), m("0"), m("0"), Optional.empty());
-        check(retire.postings().getFirst().entries().isEmpty(),
+        assertTrue(retire.postings().getFirst().entries().isEmpty(),
                 "zero-value sell after amortization creates no duplicate cash flow");
         maturityLedger = maturityLedger.apply(retire);
-        check(maturityLedger.cashBalances().get(RUB).equals(cashAfterBookedMaturityPayment)
-                        && maturityLedger.position(maturitySecurity).orElseThrow().quantity() == 0,
-                "zero-value sell retires quantity without duplicating amortization cash");
+        assertEquals(cashAfterBookedMaturityPayment, maturityLedger.cashBalances().get(RUB),
+                "zero-value sell does not duplicate amortization cash");
+        assertEquals(0, maturityLedger.position(maturitySecurity).orElseThrow().quantity(),
+                "zero-value sell retires the quantity");
     }
 
-    private static void testValidationAndImmutability() {
+    @Test
+    void ledgerOperationAndPositionValidation() {
         Ledger initial = Ledger.open(PF).apply(BondOperations.opening(id("dup"), DAY1, PF, RUB, m("10")));
         OperationResult duplicate = BondOperations.deposit(id("dup"), DAY1, PF, RUB, m("1"));
-        expectThrows(IllegalStateException.class, () -> initial.apply(duplicate), "duplicate operation id rejected");
+        assertThrows(IllegalStateException.class, () -> initial.apply(duplicate), "duplicate operation id rejected");
 
         OperationResult foreign = BondOperations.opening(id("foreign"), DAY1,
                 new PortfolioId("other"), RUB, m("1"));
-        expectThrows(IllegalStateException.class, () -> Ledger.open(PF).apply(foreign),
+        assertThrows(IllegalStateException.class, () -> Ledger.open(PF).apply(foreign),
                 "cross-portfolio posting rejected");
 
         Position empty = Position.empty(positionId(), RUB);
@@ -286,112 +297,114 @@ public final class LedgerContractTests {
         OperationResult staleTwo = BondOperations.buy(id("stale-two"), DAY1, empty, 2,
                 m("100"), m("0"), m("100"), m("0"));
         Ledger positioned = Ledger.open(PF, true).apply(staleOne);
-        expectThrows(IllegalStateException.class, () -> positioned.apply(staleTwo), "stale position rejected");
+        assertThrows(IllegalStateException.class, () -> positioned.apply(staleTwo), "stale position rejected");
 
         Ledger chronological = Ledger.open(PF).apply(
                 BondOperations.opening(id("later"), DAY1.plusDays(2), PF, RUB, m("5")));
-        expectThrows(IllegalStateException.class, () -> chronological.apply(
+        assertThrows(IllegalStateException.class, () -> chronological.apply(
                 BondOperations.deposit(id("backdated"), DAY1.plusDays(1), PF, RUB, m("1"))),
                 "backdated operation rejected");
 
         Position one = new Position(positionId(), 1, m("100"), m("100"), m("10"));
-        expectThrows(IllegalArgumentException.class, () -> BondOperations.sell(id("oversell"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> BondOperations.sell(id("oversell"), DAY1,
                 one, 2, m("100"), m("0"), m("0"), Optional.empty()), "over-sell rejected");
-        expectThrows(IllegalArgumentException.class, () -> BondOperations.amortization(id("overamort"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> BondOperations.amortization(id("overamort"), DAY1,
                 one, m("101"), m("100"), Optional.empty()), "over-amortization rejected");
-        expectThrows(IllegalArgumentException.class, () -> BondOperations.amortization(id("orphan"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> BondOperations.amortization(id("orphan"), DAY1,
                 one, m("100"), m("100"), Optional.empty()),
                 "full principal reduction with outstanding purchased accrued rejected");
-        expectThrows(IllegalArgumentException.class, () -> BondOperations.coupon(id("bad-tax"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> BondOperations.coupon(id("bad-tax"), DAY1,
                 one, m("1"), Optional.of(m("2"))), "tax above gross coupon rejected");
-        expectThrows(IllegalArgumentException.class, () -> BondOperations.buy(id("negative"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> BondOperations.buy(id("negative"), DAY1,
                 empty, 1, m("-1"), m("0"), m("100"), m("0")), "negative price rejected");
-        expectThrows(ArithmeticException.class, () -> BondOperations.buy(id("overflow"), DAY1,
+        assertThrows(ArithmeticException.class, () -> BondOperations.buy(id("overflow"), DAY1,
                 new Position(positionId(), Long.MAX_VALUE, m("1"), m("1"), m("0")),
                 1, m("1"), m("0"), m("1"), m("0")), "quantity overflow is detected");
-        expectThrows(IllegalArgumentException.class, () -> new Position(positionId(), 0,
+        assertThrows(IllegalArgumentException.class, () -> new Position(positionId(), 0,
                 m("1"), m("0"), m("0")), "zero quantity cannot retain carrying amount");
-        expectThrows(IllegalArgumentException.class, () -> new Position(positionId(), 1,
+        assertThrows(IllegalArgumentException.class, () -> new Position(positionId(), 1,
                 m("-1"), m("0"), m("0")), "negative position amount rejected");
 
-        expectThrows(UnsupportedOperationException.class, () -> initial.balances().clear(),
+    }
+
+    @Test
+    void ledgerCollectionsAndOperationResultsAreImmutable() {
+        Ledger initial = Ledger.open(PF).apply(BondOperations.opening(id("dup"), DAY1, PF, RUB, m("10")));
+        OperationResult duplicate = BondOperations.deposit(id("dup"), DAY1, PF, RUB, m("1"));
+        assertThrows(UnsupportedOperationException.class, () -> initial.balances().clear(),
                 "balances map is immutable");
-        expectThrows(UnsupportedOperationException.class, () -> initial.positions().clear(),
+        assertThrows(UnsupportedOperationException.class, () -> initial.positions().clear(),
                 "positions map is immutable");
-        expectThrows(UnsupportedOperationException.class, () -> initial.operationIds().clear(),
+        assertThrows(UnsupportedOperationException.class, () -> initial.operationIds().clear(),
                 "operation id set is immutable");
-        expectThrows(UnsupportedOperationException.class, () -> initial.postingsByDate().clear(),
+        assertThrows(UnsupportedOperationException.class, () -> initial.postingsByDate().clear(),
                 "posting dates map is immutable");
-        expectThrows(UnsupportedOperationException.class, () -> initial.postingsByDate().get(DAY1).clear(),
+        assertThrows(UnsupportedOperationException.class, () -> initial.postingsByDate().get(DAY1).clear(),
                 "posting date lists are immutable");
-        expectThrows(UnsupportedOperationException.class, () -> duplicate.postings().clear(),
+        assertThrows(UnsupportedOperationException.class, () -> duplicate.postings().clear(),
                 "operation result posting list is immutable");
     }
 
-    private static void testCurrenciesAndPostingBalance() {
+    @Test
+    void currenciesAndPostingBalance() {
         Ledger ledger = Ledger.open(PF)
                 .apply(BondOperations.opening(id("rub-open"), DAY1, PF, RUB, m("100")))
                 .apply(BondOperations.opening(id("usd-open"), DAY1, PF, USD,
                         new Money(new BigDecimal("20"), USD)));
-        check(ledger.cashBalances().get(RUB).equals(m("100")), "RUB cash balance isolated");
-        check(ledger.cashBalances().get(USD).equals(new Money(new BigDecimal("20"), USD)),
+        assertEquals(m("100"), ledger.cashBalances().get(RUB), "RUB cash balance isolated");
+        assertEquals(new Money(new BigDecimal("20"), USD), ledger.cashBalances().get(USD),
                 "USD cash balance isolated");
-        expectThrows(UnbalancedPostingException.class, () -> new Posting(id("cross-offset"), DAY1, List.of(
+        assertThrows(UnbalancedPostingException.class, () -> new Posting(id("cross-offset"), DAY1, List.of(
                 new Posting.Entry(account(AccountKind.CASH, null, RUB), m("1")),
                 new Posting.Entry(account(AccountKind.CASH, null, USD), new Money(new BigDecimal("-1"), USD)))),
                 "different currencies cannot offset each other");
 
-        expectThrows(IllegalArgumentException.class, () -> new Account(PF, AccountKind.SECURITIES,
+        assertThrows(IllegalArgumentException.class, () -> new Account(PF, AccountKind.SECURITIES,
                 Optional.empty(), RUB), "security account requires a security id");
-        expectThrows(IllegalArgumentException.class, () -> new Posting(id("wrong-currency"), DAY1, List.of(
+        assertThrows(IllegalArgumentException.class, () -> new Posting(id("wrong-currency"), DAY1, List.of(
                 new Posting.Entry(account(AccountKind.CASH, null, RUB), new Money(new BigDecimal("1"), USD)))),
                 "entry amount currency must match its account");
 
         for (String code : List.of("XDR", "XTS", "XAU")) {
-            expectThrows(IllegalArgumentException.class,
+            assertThrows(IllegalArgumentException.class,
                     () -> account(AccountKind.CASH, null, Currency.getInstance(code)),
                     code + " pseudo-currency account rejected");
         }
-        check(account(AccountKind.CASH, null, RUB).currency().equals(RUB), "RUB account accepted");
+        assertEquals(RUB, account(AccountKind.CASH, null, RUB).currency(), "RUB account accepted");
         Currency jpy = Currency.getInstance("JPY");
-        check(jpy.getDefaultFractionDigits() == 0
-                && account(AccountKind.CASH, null, jpy).currency().equals(jpy),
-                "zero-decimal JPY account accepted");
+        assertEquals(0, jpy.getDefaultFractionDigits(), "JPY has zero minor-unit digits");
+        assertEquals(jpy, account(AccountKind.CASH, null, jpy).currency(), "zero-decimal JPY account accepted");
     }
 
-    private static void testStateRoundTripAndRestoreValidation() {
+    @Test
+    void emptyAndRichLedgerStateRoundTripAndContinuation() {
         Ledger empty = Ledger.open(PF, true);
-        check(Ledger.restore(empty.state()).state().equals(empty.state()), "empty ledger state round-trips");
-
-        Ledger ledger = Ledger.open(PF).apply(
-                BondOperations.opening(id("state-open"), DAY1, PF, RUB, m("10000")));
-        Position emptyPosition = Position.empty(positionId(), RUB);
-        OperationResult purchase = BondOperations.buy(id("state-buy"), DAY1.plusDays(1), emptyPosition,
-                2, m("100"), m("2"), m("1000"), m("1"));
-        ledger = ledger.apply(purchase);
-        OperationResult coupon = BondOperations.coupon(id("state-coupon"), DAY1.plusDays(2),
-                purchase.positionAfter().orElseThrow(), m("3"), Optional.of(m("0.50")));
-        ledger = ledger.apply(coupon);
-
+        assertEquals(empty.state(), Ledger.restore(empty.state()).state(), "empty ledger state round-trips");
+        Ledger ledger = populatedLedger();
         LedgerState state = ledger.state();
         Ledger restored = Ledger.restore(state);
-        check(restored.state().equals(state), "rich state round-trips balances, positions, policy, history, and IDs");
-        check(restored.positions().equals(ledger.positions()) && restored.balances().equals(ledger.balances()),
-                "restored maps equal the original ledger maps");
+        assertEquals(state, restored.state(), "rich state round-trips balances, positions, policy, history, and IDs");
+        assertEquals(ledger.positions(), restored.positions(), "restored positions equal original positions");
+        assertEquals(ledger.balances(), restored.balances(), "restored balances equal original balances");
 
         OperationResult next = BondOperations.deposit(id("state-next"), DAY1.plusDays(3), PF, RUB, m("7"));
-        check(ledger.apply(next).state().equals(restored.apply(next).state()),
+        assertEquals(restored.apply(next).state(), ledger.apply(next).state(),
                 "restored ledger continues with the same apply result");
 
-        expectThrows(UnsupportedOperationException.class, () -> state.balances().clear(),
+    }
+
+    @Test
+    void ledgerStateCollectionsAreImmutableAndDefensivelyCopied() {
+        LedgerState state = populatedLedger().state();
+        assertThrows(UnsupportedOperationException.class, () -> state.balances().clear(),
                 "snapshot balances are immutable");
-        expectThrows(UnsupportedOperationException.class, () -> state.positions().clear(),
+        assertThrows(UnsupportedOperationException.class, () -> state.positions().clear(),
                 "snapshot positions are immutable");
-        expectThrows(UnsupportedOperationException.class, () -> state.operationIds().clear(),
+        assertThrows(UnsupportedOperationException.class, () -> state.operationIds().clear(),
                 "snapshot operation IDs are immutable");
-        expectThrows(UnsupportedOperationException.class, () -> state.postingsByDate().clear(),
+        assertThrows(UnsupportedOperationException.class, () -> state.postingsByDate().clear(),
                 "snapshot date map is immutable");
-        expectThrows(UnsupportedOperationException.class,
+        assertThrows(UnsupportedOperationException.class,
                 () -> state.postingsByDate().firstEntry().getValue().clear(),
                 "snapshot posting lists are immutable");
 
@@ -407,26 +420,30 @@ public final class LedgerContractTests {
         inputHistory.values().forEach(List::clear);
         inputHistory.clear();
         inputIds.clear();
-        check(detached.equals(state), "snapshot constructor copies every input collection deeply");
+        assertEquals(state, detached, "snapshot constructor copies every input collection deeply");
+    }
 
+    @Test
+    void restoreRejectsStructurallyInconsistentState() {
+        LedgerState state = populatedLedger().state();
         Map<Account, Money> wrongBalances = new HashMap<>(state.balances());
         Account cash = account(AccountKind.CASH, null, RUB);
         wrongBalances.put(cash, wrongBalances.get(cash).add(m("1")));
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), wrongBalances,
                         state.positions(), state.postingsByDate(), state.operationIds())),
                 "restore rejects balances that disagree with history");
 
         Set<OperationId> missingId = new HashSet<>(state.operationIds());
         missingId.remove(id("state-buy"));
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), state.balances(),
                         state.positions(), state.postingsByDate(), missingId)),
                 "restore rejects operation IDs missing from history");
 
         NavigableMap<LocalDate, List<Posting>> wrongDate = new TreeMap<>();
         wrongDate.put(DAY1.plusDays(20), state.postingsByDate().firstEntry().getValue());
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), state.balances(),
                         state.positions(), wrongDate, state.operationIds())),
                 "restore rejects a posting stored under a different date");
@@ -435,7 +452,7 @@ public final class LedgerContractTests {
         Position current = wrongPositions.get(SEC);
         wrongPositions.put(SEC, new Position(current.id(), current.quantity(),
                 current.carryingAmount().add(m("1")), current.faceAmount(), current.purchasedAccrued()));
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), state.balances(),
                         wrongPositions, state.postingsByDate(), state.operationIds())),
                 "restore rejects position assets inconsistent with security balances");
@@ -444,7 +461,7 @@ public final class LedgerContractTests {
                 current.faceAmount(), Money.zero(RUB));
         Map<SecurityId, Position> wrongAccruedPositions = new HashMap<>(state.positions());
         wrongAccruedPositions.put(SEC, wrongAccrued);
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), state.balances(),
                         wrongAccruedPositions, state.postingsByDate(), state.operationIds())),
                 "restore rejects purchased-accrued position mismatch");
@@ -454,7 +471,7 @@ public final class LedgerContractTests {
                 current.carryingAmount(), current.faceAmount(), current.purchasedAccrued());
         Map<SecurityId, Position> wrongPositionIdentity = new HashMap<>(state.positions());
         wrongPositionIdentity.put(SEC, foreignPosition);
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), state.balances(),
                         wrongPositionIdentity, state.postingsByDate(), state.operationIds())),
                 "restore rejects position from a different portfolio");
@@ -462,7 +479,7 @@ public final class LedgerContractTests {
         Ledger margin = Ledger.open(PF, true).apply(BondOperations.withdrawal(
                 id("state-margin"), DAY1, PF, RUB, m("10")));
         LedgerState marginState = margin.state();
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(marginState, false, marginState.balances(),
                         marginState.positions(), marginState.postingsByDate(), marginState.operationIds())),
                 "restore enforces the persisted strict-cash policy");
@@ -470,7 +487,7 @@ public final class LedgerContractTests {
         Account wrongCurrencyAccount = account(AccountKind.CASH, null, RUB);
         Map<Account, Money> wrongCurrency = new HashMap<>(state.balances());
         wrongCurrency.put(wrongCurrencyAccount, new Money(new BigDecimal("1"), USD));
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), wrongCurrency,
                         state.positions(), state.postingsByDate(), state.operationIds())),
                 "restore rejects account and balance currency mismatch");
@@ -479,13 +496,14 @@ public final class LedgerContractTests {
         Map<Account, Money> wrongPortfolioBalances = new HashMap<>(state.balances());
         Money cashBalance = wrongPortfolioBalances.remove(cash);
         wrongPortfolioBalances.put(foreignCash, cashBalance);
-        expectThrows(IllegalArgumentException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), wrongPortfolioBalances,
                         state.positions(), state.postingsByDate(), state.operationIds())),
                 "restore rejects account from a different portfolio");
     }
 
-    private static void testMultiplePostingsForOneOperationRestore() {
+    @Test
+    void restoreAllowsMultiplePostingsPerOperationOnOneDate() {
         OperationId operation = id("split-posting-operation");
         Account cash = account(AccountKind.CASH, null, RUB);
         Account equity = account(AccountKind.EQUITY, null, RUB);
@@ -498,7 +516,7 @@ public final class LedgerContractTests {
         LedgerState state = new LedgerState(PF, false,
                 Map.of(cash, m("3"), equity, m("-3")), Map.of(), history, Set.of(operation));
         Ledger restored = Ledger.restore(state);
-        check(restored.state().equals(state), "restore allows several balanced postings for one operation ID");
+        assertEquals(state, restored.state(), "restore allows several balanced postings for one operation ID");
 
         NavigableMap<LocalDate, List<Posting>> reusedAcrossDates = new TreeMap<>();
         reusedAcrossDates.put(DAY1, List.of(first));
@@ -506,8 +524,20 @@ public final class LedgerContractTests {
                 new Posting.Entry(cash, m("2")), new Posting.Entry(equity, m("-2"))))));
         LedgerState corrupt = new LedgerState(PF, false,
                 Map.of(cash, m("3"), equity, m("-3")), Map.of(), reusedAcrossDates, Set.of(operation));
-        expectThrows(IllegalArgumentException.class, () -> Ledger.restore(corrupt),
+        assertThrows(IllegalArgumentException.class, () -> Ledger.restore(corrupt),
                 "restore rejects one operation ID split across dates");
+    }
+
+    private static Ledger populatedLedger() {
+        Ledger ledger = Ledger.open(PF).apply(
+                BondOperations.opening(id("state-open"), DAY1, PF, RUB, m("10000")));
+        Position emptyPosition = Position.empty(positionId(), RUB);
+        OperationResult purchase = BondOperations.buy(id("state-buy"), DAY1.plusDays(1), emptyPosition,
+                2, m("100"), m("2"), m("1000"), m("1"));
+        ledger = ledger.apply(purchase);
+        OperationResult coupon = BondOperations.coupon(id("state-coupon"), DAY1.plusDays(2),
+                purchase.positionAfter().orElseThrow(), m("3"), Optional.of(m("0.50")));
+        return ledger.apply(coupon);
     }
 
     private static LedgerState withState(LedgerState source, boolean allowNegativeCash,
@@ -527,7 +557,7 @@ public final class LedgerContractTests {
                 new Money(new BigDecimal(amount), currency));
     }
 
-    private static void checkEntries(Posting posting, ExpectedEntry... expected) {
+    private static void assertEntries(Posting posting, ExpectedEntry... expected) {
         Map<Account, Money> actual = new HashMap<>();
         for (Posting.Entry entry : posting.entries()) {
             actual.merge(entry.account(), entry.amount(), Money::add);
@@ -538,8 +568,8 @@ public final class LedgerContractTests {
                 expectedMap.put(entry.account(), entry.amount());
             }
         }
-        check(actual.equals(expectedMap), "posting entries expected " + expectedMap + " but got " + actual);
-        checkBalanced(posting);
+        assertEquals(expectedMap, actual, "posting entries expected " + expectedMap + " but got " + actual);
+        assertBalanced(posting);
     }
 
     private static Money entryAmount(Posting posting, Account account) {
@@ -547,16 +577,16 @@ public final class LedgerContractTests {
                 .map(Posting.Entry::amount).reduce(Money.zero(account.currency()), Money::add);
     }
 
-    private static void checkBalanced(Posting posting) {
+    private static void assertBalanced(Posting posting) {
         Map<Currency, Money> totals = new HashMap<>();
         for (Posting.Entry entry : posting.entries()) {
             totals.merge(entry.amount().currency(), entry.amount(), Money::add);
         }
-        check(totals.values().stream().allMatch(Money::isZero), "posting balances by currency");
+        assertTrue(totals.values().stream().allMatch(Money::isZero), "posting balances by currency");
     }
 
-    private static void checkPositionNonnegative(Position position) {
-        check(position.quantity() >= 0 && !position.carryingAmount().isNegative()
+    private static void assertPositionNonnegative(Position position) {
+        assertTrue(position.quantity() >= 0 && !position.carryingAmount().isNegative()
                         && !position.faceAmount().isNegative() && !position.purchasedAccrued().isNegative(),
                 "position quantity and asset totals remain nonnegative");
     }
@@ -564,25 +594,6 @@ public final class LedgerContractTests {
     private static PositionId positionId() { return new PositionId(PF, SEC); }
     private static OperationId id(String value) { return new OperationId(value); }
     private static Money m(String value) { return new Money(new BigDecimal(value), RUB); }
-
-    private static void check(boolean condition, String message) {
-        checks++;
-        if (!condition) throw new AssertionError(message);
-    }
-
-    private static <T extends Throwable> T expectThrows(Class<T> expected, Runnable action, String message) {
-        try {
-            action.run();
-        } catch (Throwable thrown) {
-            if (expected.isInstance(thrown)) {
-                checks++;
-                return expected.cast(thrown);
-            }
-            throw new AssertionError(message + ": expected " + expected.getName()
-                    + " but got " + thrown.getClass().getName(), thrown);
-        }
-        throw new AssertionError(message + ": expected " + expected.getName());
-    }
 
     private record ExpectedEntry(Account account, Money amount) { }
 

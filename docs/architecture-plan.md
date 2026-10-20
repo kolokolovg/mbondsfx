@@ -18,7 +18,8 @@ SQLite и compaction остаются будущими отдельными gate
   service contracts; CLI `--profile=all|moex|cbr` создает только выбранные capabilities и memory,
   не выполняя fetch. Gate4 одобрен: module-path blackbox проверяет произведенный `installDist`.
   Остаются process-local memory, полная история `Ledger` без compaction, SQLite/migration stack вне
-  scope; whitebox JavaExec suites намеренно остаются classpath runners.
+  scope. Исторические JavaExec main-runner suites мигрированы на JUnit Jupiter; проверки сохранены,
+  а тестовая компиляция и whitebox execution по-прежнему остаются classpath-only.
 
 ## 2. Целевая топология и направление зависимостей
 
@@ -251,7 +252,7 @@ module ru.onlychill.mbondsfx {
 - Фикстуры обязаны РАЗЛИЧАТЬ runtime module path и runtime classpath: доказательство JPMS —
   только запуск по module path (положительный: service binding обоих провайдеров;
   отрицательный: рефлексивный/компиляционный доступ к `…integrations.xml`/`.internal`
-  падает). Обычные JavaExec-runner'ы — classpath whitebox, доказательством НЕ являются.
+  падает). Обычные JUnit tests, запущенные Gradle на classpath, — whitebox, доказательством НЕ являются.
   Smoke дистрибутива: запуск ПРОИЗВЕДЕННОГО дистрибутива (`installDist`/start-скрипт
   application plugin, module path), не только `gradlew run`.
 
@@ -279,8 +280,9 @@ natives, транзитивные notices, temp-каталог extraction, пр�
 необходимости (не blanket); до добавления — точные координаты/версия, лицензия, транзитивные
 зависимости, natives/notices, JPMS-имя; copyleft/proprietary — отдельное явное одобрение;
 `java.sql` — только API, драйвер никогда в `:core`; JPMS descriptors настроены фазой 4, но их
-encapsulation подтверждается только module-path blackbox fixtures, не classpath runner'ами. Сейчас
-новый код — только JDK.
+  encapsulation подтверждается только module-path blackbox fixtures, не classpath tests. Production
+  code использует JDK без сторонних библиотек; JUnit Jupiter 5.12.2 и JUnit Platform 1.12.2
+  добавлены только в test configurations.
 
 ## 6. Фазы (порядок Oracle-gate обязателен; координатор — единственный владелец settings.gradle, root build и удалений в shared `:integrations`)
 
@@ -318,7 +320,11 @@ descriptors, Gradle alignment, root `mainModule`/`mainClass`, `uses`×3 и runti
 checks и `installDist`. Независимые fixtures запускают произведенный distribution на module path и
 проверяют service binding профилей, missing/duplicate IDs, provider substitution и denied access к
 qualified/non-exported packages. Все 18 blackbox проверок прошли в чистой и offline сборках;
-classpath tests отдельно не считаются JPMS proof. См. `gate4.md` и `final-validation.md`.
+classpath tests отдельно не считаются JPMS proof. Позднее исходные JavaExec main-runner'ы были
+мигрированы в стандартные JUnit tests; root `test` зависит от `installDist`, а 18 module-path
+проверок запускаются отдельными java/javac subprocesses. `compileTestJava` и JUnit runner остаются
+на classpath (`inferModulePath = false`), без `opens`/`--add-opens`. См. `gate4.md` и
+`final-validation.md` как исторические gate-доказательства.
 
 **Фаза 5 — БУДУЩЕЕ, отдельные gate при явном старте.** (a) `:persistence-sqlite`: JDBC/xerial
 после верификации §4.8, миграции, WAL, фикстуры отказа БД (rollback + reopen), roundtrip
@@ -328,7 +334,7 @@ classpath tests отдельно не считаются JPMS proof. См. `gate
 
 ## 7. План проверок и фикстур (offline, без сети)
 
-- Фаза 3 добавляет dependency-free `ApplicationArchitectureContractTests` с явными путями source
+- Фаза 3 добавляет `ApplicationArchitectureContractTests` с явными путями source
   roots/build files: Java imports и Gradle edges проверяются для root→core, application→core,
   integrations→application/core, moex/cbr→integrations/application/core,
   persistence-memory→application/core. Negative fixtures проверяют forbidden edges; core
@@ -339,7 +345,7 @@ classpath tests отдельно не считаются JPMS proof. См. `gate
   decode ДО Set; CAS mismatch → отказ; same-date монотонный sequence; backdate → отказ как
   сегодня; конкурирующие commit'ы — ровно один отклонен; `LedgerJournal` запрос возвращает
   порядок `(date, sequence)`; reopen/load→restore→равенство.
-- JPMS (фаза 4): positive — module-path запуск + service binding; negative — доступ к
+- JPMS (фаза 4, текущая JUnit suite): positive — module-path запуск + service binding; negative — доступ к
   неэкспортированным `…integrations.xml`/`.internal` (рефлексия/компиляция) падает; missing
   provider → ясная ошибка; duplicate providerId → ошибка; замена провайдера (dependency
   substitution) без перекомпиляции core/application; smoke произведенного дистрибутива

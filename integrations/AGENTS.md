@@ -27,7 +27,7 @@ runtime providers/memory выбираются root через три typed `Serv
 теперь настроены: shared module transitively requires application, unconditionally
 exports only `integrations.provider`, and qualified-exports transport/XML/index/adapter only to MOEX
 and CBR provider modules. Provider bootstrap lives in the root composition module. Module-path
-blackbox proof remains the phase4 acceptance; classpath runners are not JPMS evidence.
+blackbox proof remains the phase4 acceptance; classpath tests are not JPMS evidence.
 Core/application-модели не должны импортировать адаптеры, транспорт или сырые DTO. Не превращайте
 MOEX-ответ в `BondDefinition` и не переводите незнакомые поля, формулы или значения в
 предположительные доменные значения без отдельного явного mapping требования.
@@ -64,15 +64,17 @@ CBR adapter в `:integrations-cbr` и `StaticFixings` из этого модул
 является общим контрактом, а не типом реализации `HttpTransport`. Не ослабляйте ограничения на
 обработку источника ради «починки» данных.
 
-Контрактные проверки — dependency-free Java runners. Shared `AdapterContractTests` покрывает только
+Контрактные проверки запускаются стандартным Gradle `test` task с JUnit Jupiter. Shared `AdapterContractTests` покрывает только
 generic `StaticFixings` и transport; shared `IntegrationModelContractTests` покрывает fixing API,
 bridge, calculation и transport; SPI/settings assertions принадлежат `ProviderContractTests`.
 MOEX adapter/raw DTO assertions размещаются в тестах `:integrations-moex`; CBR adapter/XML assertions
 — в тесте `:integrations-cbr`. XML hardening остается покрыт проверками обоих провайдеров.
+Все module tests остаются classpath-only и не являются JPMS proof.
 
 ```bash
 ./gradlew :integrations:check
 ./gradlew --offline :integrations:check
+./gradlew :integrations:test --tests '*ProviderContractTests'
 ```
 
 Offline-флаг использует только уже закешированные Gradle distribution и зависимости; см. также

@@ -6,22 +6,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.Test;
 import ru.onlychill.mbondsfx.core.id.SecurityId;
 import ru.onlychill.mbondsfx.integrations.marketdata.MarketDataPort;
 import ru.onlychill.mbondsfx.integrations.marketdata.model.BondMarketData;
 
-public final class IntegrationModelContractTests {
-    private static int checks;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-    private IntegrationModelContractTests() {
-    }
-
-    public static void main(String[] args) {
-        testMarketData();
-        System.out.println("MOEX IntegrationModelContractTests: " + checks + " checks passed");
-    }
-
-    private static void testMarketData() {
+class IntegrationModelContractTests {
+    @Test
+    void marketDataRawValuesAreCopiedSortedAndImmutable() {
         LocalDate early = LocalDate.of(2024, 3, 1);
         LocalDate late = LocalDate.of(2024, 6, 1);
         BondMarketData.CouponRow lateCoupon = new BondMarketData.CouponRow(late,
@@ -55,58 +52,37 @@ public final class IntegrationModelContractTests {
         amortizations.clear();
         offers.clear();
 
-        check(data.description().get("EMPTY").isEmpty(), "raw empty description value preserved");
-        check(!data.description().containsKey("MUTATED"), "description map defensively copied");
-        check(data.coupons().size() == 2 && data.coupons().get(0).paymentDate().equals(early),
+        assertTrue(data.description().get("EMPTY").isEmpty(), "raw empty description value preserved");
+        assertFalse(data.description().containsKey("MUTATED"), "description map defensively copied");
+        assertTrue(data.coupons().size() == 2 && data.coupons().get(0).paymentDate().equals(early),
                 "coupon rows sorted and copied");
-        check(data.coupons().get(0).value().orElseThrow().equals(new BigDecimal("42.125")),
+        assertEquals(new BigDecimal("42.125"), data.coupons().get(0).value().orElseThrow(),
                 "raw coupon quote precision preserved");
-        check(data.coupons().get(1).value().isEmpty(), "missing coupon amount remains empty");
-        check(data.amortizations().get(0).date().equals(early), "amortization rows sorted");
-        check(data.amortizations().get(1).faceValue().equals(new BigDecimal("700")),
+        assertTrue(data.coupons().get(1).value().isEmpty(), "missing coupon amount remains empty");
+        assertEquals(early, data.amortizations().get(0).date(), "amortization rows sorted");
+        assertEquals(new BigDecimal("700"), data.amortizations().get(1).faceValue(),
                 "raw amortization faceValue field preserved");
-        check(data.amortizations().get(1).source().equals("amortization"), "raw amortization source preserved");
-        check(data.offers().get(0).offerDate().orElseThrow().equals(early)
+        assertEquals("amortization", data.amortizations().get(1).source(), "raw amortization source preserved");
+        assertTrue(data.offers().get(0).offerDate().orElseThrow().equals(early)
                 && data.offers().get(1).offerDate().isEmpty(), "offers sorted with undated rows last");
-        expectThrows(UnsupportedOperationException.class,
+        assertThrows(UnsupportedOperationException.class,
                 () -> data.description().put("NEW", "value"), "description map is immutable");
-        expectThrows(UnsupportedOperationException.class,
+        assertThrows(UnsupportedOperationException.class,
                 () -> data.coupons().add(lateCoupon), "coupon rows are immutable");
-        expectThrows(NullPointerException.class,
+        assertThrows(NullPointerException.class,
                 () -> new BondMarketData(null, List.of(), List.of(), List.of()), "null description rejected");
-        expectThrows(NullPointerException.class,
+        assertThrows(NullPointerException.class,
                 () -> new BondMarketData(Map.of(), List.of((BondMarketData.CouponRow) null), List.of(), List.of()),
                 "null row rejected");
-        expectThrows(NullPointerException.class,
+        assertThrows(NullPointerException.class,
                 () -> new BondMarketData.CouponRow(early, null, Optional.empty(), BigDecimal.ONE, "RUB",
                         Optional.empty(), Optional.empty(), Optional.empty()), "null DTO optional rejected");
-        expectThrows(NullPointerException.class,
+        assertThrows(NullPointerException.class,
                 () -> new BondMarketData.AmortizationRow(early, null, BigDecimal.ONE, "RUB",
                         Optional.empty(), Optional.empty(), Optional.empty(), "amortization"),
                 "null raw face value rejected");
 
         MarketDataPort emptyPort = secid -> Optional.empty();
-        check(emptyPort.bond(new SecurityId("TEST")).isEmpty(), "market-data port empty result contract");
-    }
-
-    private static void check(boolean condition, String message) {
-        checks++;
-        if (!condition) {
-            throw new AssertionError(message);
-        }
-    }
-
-    private static <T extends Throwable> T expectThrows(Class<T> expectedType, Runnable action, String message) {
-        try {
-            action.run();
-        } catch (Throwable thrown) {
-            if (expectedType.isInstance(thrown)) {
-                checks++;
-                return expectedType.cast(thrown);
-            }
-            throw new AssertionError(message + ": expected " + expectedType.getName()
-                    + " but got " + thrown.getClass().getName(), thrown);
-        }
-        throw new AssertionError(message + ": expected " + expectedType.getName());
+        assertTrue(emptyPort.bond(new SecurityId("TEST")).isEmpty(), "market-data port empty result contract");
     }
 }
