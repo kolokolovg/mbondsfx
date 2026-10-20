@@ -1,0 +1,56 @@
+plugins {
+    id 'application'
+}
+
+group = 'ru.onlychill'
+version = '1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    modularity.inferModulePath = true
+}
+
+application {
+    mainModule = 'ru.onlychill.mbondsfx'
+    mainClass = 'ru.onlychill.mbondsfx.Main'
+}
+
+dependencies {
+    implementation project(':core')
+    implementation project(':application')
+    implementation project(':integrations')
+    runtimeOnly project(':integrations-moex')
+    runtimeOnly project(':integrations-cbr')
+    runtimeOnly project(':persistence-memory')
+}
+
+tasks.named('compileTestJava', JavaCompile) {
+    modularity.inferModulePath = false
+}
+
+tasks.named('run', JavaExec) {
+    modularity.inferModulePath = true
+}
+
+def installDistribution = tasks.named('installDist')
+def modulePathContractTest = tasks.register('modulePathContractTest', JavaExec) {
+    group = 'verification'
+    description = 'Runs module-path and installed-distribution contract tests.'
+    dependsOn tasks.named('testClasses'), installDistribution
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'ru.onlychill.mbondsfx.ModulePathContractTests'
+    modularity.inferModulePath = false
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    doFirst {
+        systemProperty 'projectRoot', rootProject.projectDir.absolutePath
+        systemProperty 'installDir', installDistribution.get().destinationDir.absolutePath
+    }
+}
+
+check {
+    dependsOn modulePathContractTest
+}

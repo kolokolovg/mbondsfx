@@ -1,0 +1,8 @@
+rootProject.name = 'ru.onlychill.mbondsfx'
+
+include 'core'
+include 'application'
+include 'integrations'
+include 'integrations-moex'
+include 'integrations-cbr'
+include 'persistence-memory'

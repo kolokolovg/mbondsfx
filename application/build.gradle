@@ -1,0 +1,74 @@
+plugins {
+    id 'java-library'
+}
+
+group = rootProject.group
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    modularity.inferModulePath = true
+}
+
+dependencies {
+    api project(':core')
+}
+
+def contractTestRunners = [
+    applicationContractTest: 'ru.onlychill.mbondsfx.application.ApplicationContractTests',
+    applicationArchitectureContractTest: 'ru.onlychill.mbondsfx.application.ApplicationArchitectureContractTests'
+]
+
+def architectureInputs = [
+    rootMainSourceDir: 'src/main/java',
+    coreMainSourceDir: 'core/src/main/java',
+    applicationMainSourceDir: 'application/src/main/java',
+    integrationsMainSourceDir: 'integrations/src/main/java',
+    moexMainSourceDir: 'integrations-moex/src/main/java',
+    cbrMainSourceDir: 'integrations-cbr/src/main/java',
+    memoryMainSourceDir: 'persistence-memory/src/main/java',
+    rootBuildFile: 'build.gradle',
+    coreBuildFile: 'core/build.gradle',
+    applicationBuildFile: 'application/build.gradle',
+    integrationsBuildFile: 'integrations/build.gradle',
+    moexBuildFile: 'integrations-moex/build.gradle',
+    cbrBuildFile: 'integrations-cbr/build.gradle',
+    memoryBuildFile: 'persistence-memory/build.gradle'
+].collectEntries { propertyName, relativePath ->
+    [propertyName, rootProject.file(relativePath).absolutePath]
+}
+
+contractTestRunners.each { taskName, runnerClass ->
+    tasks.register(taskName, JavaExec) {
+        group = 'verification'
+        description = "Runs the ${taskName} contract runner."
+        dependsOn tasks.named('testClasses')
+        classpath = sourceSets.test.runtimeClasspath
+        mainClass = runnerClass
+        modularity.inferModulePath = false
+        if (taskName == 'applicationArchitectureContractTest') {
+            architectureInputs.each { propertyName, absolutePath ->
+                systemProperty propertyName, absolutePath
+            }
+        }
+        javaLauncher = javaToolchains.launcherFor {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+    }
+}
+
+tasks.named('compileTestJava', JavaCompile) {
+    modularity.inferModulePath = false
+}
+
+check {
+    dependsOn contractTestRunners.keySet()
+}
+
+// This dependency-free suite has a main method, not JUnit test methods.
+tasks.named('test') {
+    enabled = false
+    dependsOn contractTestRunners.keySet()
+}

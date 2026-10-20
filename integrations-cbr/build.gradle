@@ -1,0 +1,43 @@
+plugins {
+    id 'java-library'
+}
+
+group = rootProject.group
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    modularity.inferModulePath = true
+}
+
+dependencies {
+    implementation project(':integrations')
+}
+
+tasks.register('cbrProviderContractTest', JavaExec) {
+    group = 'verification'
+    description = 'Runs the offline CBR provider contract runner.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'ru.onlychill.mbondsfx.integrations.cbr.internal.CbrProviderContractTests'
+    modularity.inferModulePath = false
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+tasks.named('compileTestJava', JavaCompile) {
+    modularity.inferModulePath = false
+}
+
+check {
+    dependsOn tasks.named('cbrProviderContractTest')
+}
+
+// This dependency-free suite has a main method, not JUnit test methods.
+tasks.named('test') {
+    enabled = false
+    dependsOn tasks.named('cbrProviderContractTest')
+}

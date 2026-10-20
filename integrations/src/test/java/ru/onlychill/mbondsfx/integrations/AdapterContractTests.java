@@ -1,0 +1,228 @@
+package ru.onlychill.mbondsfx.integrations;
+
+import java.io.IOException;
+import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
+import java.net.Authenticator;
+import java.net.CookieHandler;
+import java.net.ProxySelector;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.WebSocket;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.LocalDate;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Flow;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import ru.onlychill.mbondsfx.core.id.IndexId;
+import ru.onlychill.mbondsfx.integrations.adapter.StaticFixings;
+import ru.onlychill.mbondsfx.integrations.index.IndexFixing;
+import ru.onlychill.mbondsfx.integrations.index.MissingFixingException;
+import ru.onlychill.mbondsfx.integrations.transport.HttpStatusException;
+import ru.onlychill.mbondsfx.integrations.transport.HttpTransport;
+import ru.onlychill.mbondsfx.integrations.transport.Transport;
+import ru.onlychill.mbondsfx.integrations.transport.TransportException;
+
+/** Offline contract checks for adapters; all network boundaries are replaced with fakes. */
+public final class AdapterContractTests {
+    private static int checks;
+
+    private AdapterContractTests() {
+    }
+
+    public static void main(String[] args) {
+        staticFixingsAreImmutableAndExact();
+        httpTransportUsesUtf8TimeoutAndStatusHandling();
+        System.out.println("AdapterContractTests: " + checks + " checks passed");
+    }
+
+    private static void staticFixingsAreImmutableAndExact() {
+        IndexId cpi = new IndexId("CPI");
+        LocalDate date = LocalDate.of(2026, 1, 1);
+        Map<LocalDate, BigDecimal> dates = new LinkedHashMap<>();
+        dates.put(date, new BigDecimal("1.023"));
+        Map<IndexId, Map<LocalDate, BigDecimal>> table = new LinkedHashMap<>();
+        table.put(cpi, dates);
+        StaticFixings fixings = StaticFixings.of(table);
+        dates.put(date.plusDays(1), BigDecimal.TEN);
+        table.clear();
+        equal(new BigDecimal("1.023"), fixings.fixing(cpi, date).value(), "copy protects static data");
+        expect(MissingFixingException.class,
+                () -> fixings.fixing(cpi, date.plusDays(1)), "no forward fill in static fixings");
+        StaticFixings direct = StaticFixings.of(new IndexFixing(cpi, date, new BigDecimal("0.1023")));
+        equal(new BigDecimal("0.1023"), direct.fixing(cpi, date).value(), "varargs values remain decimal fractions");
+    }
+
+    private static void httpTransportUsesUtf8TimeoutAndStatusHandling() {
+        RecordingHttpClient client = new RecordingHttpClient(200, "Привет", null);
+        HttpTransport transport = new HttpTransport(client, Duration.ofSeconds(7));
+        String body = transport.send(new Transport.Request("POST", URI.create("https://fixture.invalid/soap"),
+                Map.of("Content-Type", "text/xml; charset=utf-8", "SOAPAction", "\"action\""), "Привет"));
+        equal("Привет", body, "response decoded as UTF-8");
+        equal(Duration.ofSeconds(7), client.request.timeout().orElseThrow(), "explicit request timeout");
+        equal("Привет", new String(requestBodyBytes(client.request), StandardCharsets.UTF_8),
+                "request encoded as UTF-8");
+        equal("mbondsfx/1.0 (public market-data client)", client.request.headers()
+                .firstValue("User-Agent").orElseThrow(), "polite user agent");
+
+        TransportException statusFailure = expect(TransportException.class,
+                () -> new HttpTransport(new RecordingHttpClient(503, "status body", null), Duration.ofSeconds(1))
+                        .send(Transport.Request.get(URI.create("https://fixture.invalid/fail"))),
+                "non-2xx HTTP status fails");
+        check(statusFailure.getCause() instanceof HttpStatusException,
+                "non-2xx failure exposes the transport status contract");
+        HttpStatusException status = (HttpStatusException) statusFailure.getCause();
+        equal(503, status.statusCode(), "status contract retains response code");
+        equal(URI.create("https://fixture.invalid/fail"), status.uri(), "status contract retains request URI");
+        equal("status body", status.responseBody(), "status contract retains response body");
+
+        RecordingHttpClient interrupted = new RecordingHttpClient(200, "", new InterruptedException("test"));
+        HttpTransport interruptedTransport = new HttpTransport(interrupted, Duration.ofSeconds(1));
+        try {
+            interruptedTransport.send(Transport.Request.get(URI.create("https://fixture.invalid/interrupted")));
+            throw new AssertionError("Expected interrupted transport");
+        } catch (TransportException expected) {
+            check(Thread.currentThread().isInterrupted(), "interruption flag restored");
+            Thread.interrupted();
+        }
+    }
+
+    private static void check(boolean condition, String message) {
+        checks++;
+        if (!condition) {
+            throw new AssertionError(message);
+        }
+    }
+
+    private static void equal(Object expected, Object actual, String message) {
+        check(java.util.Objects.equals(expected, actual),
+                message + ": expected <" + expected + "> but was <" + actual + ">");
+    }
+
+    private static void decimalEqual(BigDecimal expected, BigDecimal actual, String message) {
+        check(expected.compareTo(actual) == 0,
+                message + ": expected <" + expected + "> but was <" + actual + ">");
+    }
+
+    private static <T extends Throwable> T expect(Class<T> expected, Runnable action, String message) {
+        try {
+            action.run();
+        } catch (Throwable thrown) {
+            if (expected.isInstance(thrown)) {
+                checks++;
+                return expected.cast(thrown);
+            }
+            throw new AssertionError(message + ": expected " + expected.getSimpleName() + " but caught " + thrown,
+                    thrown);
+        }
+        throw new AssertionError(message + ": expected " + expected.getSimpleName());
+    }
+
+    private static byte[] requestBodyBytes(HttpRequest request) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        CompletableFuture<Void> completed = new CompletableFuture<>();
+        request.bodyPublisher().orElseThrow().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+            @Override public void onNext(java.nio.ByteBuffer buffer) {
+                byte[] bytes = new byte[buffer.remaining()];
+                buffer.get(bytes);
+                output.writeBytes(bytes);
+            }
+            @Override public void onError(Throwable failure) { completed.completeExceptionally(failure); }
+            @Override public void onComplete() { completed.complete(null); }
+        });
+        completed.join();
+        return output.toByteArray();
+    }
+
+    private static final class RecordingHttpClient extends HttpClient {
+        private final int status;
+        private final String responseBody;
+        private final InterruptedException interruption;
+        private HttpRequest request;
+
+        RecordingHttpClient(int status, String responseBody, InterruptedException interruption) {
+            this.status = status;
+            this.responseBody = responseBody;
+            this.interruption = interruption;
+        }
+
+        @Override
+        public Optional<CookieHandler> cookieHandler() { return Optional.empty(); }
+        @Override
+        public Optional<Duration> connectTimeout() { return Optional.empty(); }
+        @Override
+        public Redirect followRedirects() { return Redirect.NEVER; }
+        @Override
+        public Optional<ProxySelector> proxy() { return Optional.empty(); }
+        @Override
+        public SSLContext sslContext() { return null; }
+        @Override
+        public SSLParameters sslParameters() { return new SSLParameters(); }
+        @Override
+        public Optional<Authenticator> authenticator() { return Optional.empty(); }
+        @Override
+        public Version version() { return Version.HTTP_1_1; }
+        @Override
+        public Optional<Executor> executor() { return Optional.empty(); }
+        @Override
+        public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler)
+                throws IOException, InterruptedException {
+            this.request = request;
+            if (interruption != null) {
+                throw interruption;
+            }
+            HttpResponse.ResponseInfo info = new HttpResponse.ResponseInfo() {
+                @Override public int statusCode() { return status; }
+                @Override public HttpHeaders headers() { return HttpHeaders.of(Map.of(), (a, b) -> true); }
+                @Override public Version version() { return Version.HTTP_1_1; }
+            };
+            HttpResponse.BodySubscriber<T> subscriber = responseBodyHandler.apply(info);
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) { }
+                @Override public void cancel() { }
+            });
+            byte[] bytes = responseBody.getBytes(StandardCharsets.UTF_8);
+            subscriber.onNext(List.of(java.nio.ByteBuffer.wrap(bytes)));
+            subscriber.onComplete();
+            T body;
+            try {
+                body = subscriber.getBody().toCompletableFuture().join();
+            } catch (java.util.concurrent.CompletionException failure) {
+                throw new IOException(failure);
+            }
+            return new HttpResponse<>() {
+                @Override public int statusCode() { return status; }
+                @Override public HttpRequest request() { return request; }
+                @Override public Optional<HttpResponse<T>> previousResponse() { return Optional.empty(); }
+                @Override public HttpHeaders headers() { return HttpHeaders.of(Map.of(), (a, b) -> true); }
+                @Override public T body() { return body; }
+                @Override public Optional<javax.net.ssl.SSLSession> sslSession() { return Optional.empty(); }
+                @Override public URI uri() { return request.uri(); }
+                @Override public Version version() { return Version.HTTP_1_1; }
+            };
+        }
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request,
+                HttpResponse.BodyHandler<T> responseBodyHandler) {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException());
+        }
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request,
+                HttpResponse.BodyHandler<T> responseBodyHandler, HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException());
+        }
+        @Override
+        public WebSocket.Builder newWebSocketBuilder() { throw new UnsupportedOperationException(); }
+    }
+}

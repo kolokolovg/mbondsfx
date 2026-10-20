@@ -1,0 +1,51 @@
+plugins {
+    id 'java-library'
+}
+
+group = rootProject.group
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    modularity.inferModulePath = true
+}
+
+dependencies {
+    implementation project(':integrations')
+}
+
+def contractTestRunners = [
+    moexAdapterContractTest: 'ru.onlychill.mbondsfx.integrations.moex.AdapterContractTests',
+    moexRawModelContractTest: 'ru.onlychill.mbondsfx.integrations.moex.IntegrationModelContractTests',
+    moexProviderContractTest: 'ru.onlychill.mbondsfx.integrations.moex.internal.MoexProviderContractTests'
+]
+
+contractTestRunners.each { taskName, runnerClass ->
+    tasks.register(taskName, JavaExec) {
+        group = 'verification'
+        description = "Runs the ${taskName} contract runner."
+        dependsOn tasks.named('testClasses')
+        classpath = sourceSets.test.runtimeClasspath
+        mainClass = runnerClass
+        modularity.inferModulePath = false
+        javaLauncher = javaToolchains.launcherFor {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+    }
+}
+
+tasks.named('compileTestJava', JavaCompile) {
+    modularity.inferModulePath = false
+}
+
+check {
+    dependsOn contractTestRunners.keySet()
+}
+
+// These dependency-free suites have main methods, not JUnit test methods.
+tasks.named('test') {
+    enabled = false
+    dependsOn contractTestRunners.keySet()
+}
