@@ -1,4 +1,6 @@
 module ru.onlychill.mbondsfx {
+    requires static lombok;
+    requires org.slf4j;
     requires ru.onlychill.mbondsfx.core;
     requires ru.onlychill.mbondsfx.application;
     requires ru.onlychill.mbondsfx.integrations;

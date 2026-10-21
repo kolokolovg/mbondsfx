@@ -68,6 +68,19 @@ class ApplicationArchitectureContractTests {
             "integrations-moex", Set.of("implementation :integrations"),
             "integrations-cbr", Set.of("implementation :integrations"),
             "persistence-memory", Set.of("implementation :application"));
+    private static final Map<String, Set<String>> ALLOWED_EXTERNAL_DEPENDENCIES = Map.of(
+            "root", Set.of("compileOnly org.projectlombok:lombok:${lombokVersion}",
+                    "annotationProcessor org.projectlombok:lombok:${lombokVersion}",
+                    "testCompileOnly org.projectlombok:lombok:${lombokVersion}",
+                    "testAnnotationProcessor org.projectlombok:lombok:${lombokVersion}",
+                    "implementation org.slf4j:slf4j-api:${slf4jVersion}",
+                    "runtimeOnly org.slf4j:slf4j-simple:${slf4jVersion}"),
+            "core", Set.of(),
+            "application", Set.of(),
+            "integrations", Set.of(),
+            "integrations-moex", Set.of(),
+            "integrations-cbr", Set.of(),
+            "persistence-memory", Set.of());
     private static final Map<String, Set<String>> EXPECTED_EXPORTS = Map.of(
             "root", Set.of(),
             "core", Set.of(CORE + ".bond", CORE + ".bond.calculation", CORE + ".bond.calculation.port",
@@ -110,6 +123,14 @@ class ApplicationArchitectureContractTests {
             "integrations-moex", Set.of("java.net.http", "java.xml"),
             "integrations-cbr", Set.of("java.net.http", "java.xml"),
             "persistence-memory", Set.of());
+    private static final Map<String, Set<String>> EXPECTED_EXTERNAL_REQUIRES = Map.of(
+            "root", Set.of("static lombok", "org.slf4j"),
+            "core", Set.of(),
+            "application", Set.of(),
+            "integrations", Set.of(),
+            "integrations-moex", Set.of(),
+            "integrations-cbr", Set.of(),
+            "persistence-memory", Set.of());
 
     private static final Pattern PACKAGE = Pattern.compile("(?m)^\\s*package\\s+([\\w.]+)\\s*;");
     private static final Pattern IMPORT = Pattern.compile("(?m)^\\s*import\\s+(?:static\\s+)?([\\w.]+(?:\\.\\*)?)\\s*;");
@@ -124,6 +145,8 @@ class ApplicationArchitectureContractTests {
     private static final Pattern OPENS = Pattern.compile("\\bopens\\s+[\\w.]+(?:\\s+to\\s+[^;]+)?;");
     private static final Pattern PROJECT_DEPENDENCY = Pattern.compile(
             "(?m)^[ \\t]*([A-Za-z][\\w]*)[ \\t]*(?:\\([ \\t]*)?project\\(['\"]:([\\w-]+)['\"]\\)[ \\t]*\\)?");
+    private static final Pattern EXTERNAL_DEPENDENCY = Pattern.compile(
+            "(?m)^[ \\t]*([A-Za-z][\\w]*)[ \\t]+['\"]([^'\"]+)['\"]");
 
     @Test
     void negativeFixturesRejectForbiddenEdges() {
@@ -160,6 +183,12 @@ class ApplicationArchitectureContractTests {
                 "negative fixture: application cannot import persistence implementation");
         assertFalse(isImportAllowed("application", "com.example.external.Client"),
                 "negative fixture: application cannot import non-JDK/non-core dependencies");
+        assertTrue(isImportAllowed("root", "lombok.extern.slf4j.Slf4j"),
+                "root may import its explicitly allowed Lombok annotation");
+        assertTrue(isImportAllowed("root", "org.slf4j.Logger"),
+                "root may import its explicitly allowed SLF4J API");
+        assertFalse(isImportAllowed("application", "org.slf4j.Logger"),
+                "negative fixture: application cannot import root-only SLF4J");
         assertFalse(isImportAllowed("integrations-moex", CBR + ".internal.CbrIndexAdapter"),
                 "negative fixture: MOEX cannot import the CBR provider implementation");
         assertFalse(isImportAllowed("root", INTEGRATIONS + ".transport.Transport"),
@@ -237,6 +266,18 @@ class ApplicationArchitectureContractTests {
         }
         assertEquals(ALLOWED_PROJECT_DEPENDENCIES.get(module), actual,
                 module + " Gradle project dependencies match the allowed topology");
+        Set<String> external = new java.util.HashSet<>();
+        Matcher externalDependencies = EXTERNAL_DEPENDENCY.matcher(contents);
+        while (externalDependencies.find()) {
+            String coordinate = externalDependencies.group(2);
+            if (coordinate.startsWith("org.projectlombok:lombok:")
+                    || coordinate.startsWith("org.slf4j:slf4j-api:")
+                    || coordinate.startsWith("org.slf4j:slf4j-simple:")) {
+                external.add(externalDependencies.group(1) + " " + coordinate);
+            }
+        }
+        assertEquals(ALLOWED_EXTERNAL_DEPENDENCIES.get(module), external,
+                module + " uses only the approved root-scoped Lombok/SLF4J configurations");
         assertFalse(contents.contains("--add-exports") || contents.contains("--add-opens"),
                 module + " build does not bypass JPMS encapsulation with add-exports/add-opens");
     }
@@ -263,6 +304,7 @@ class ApplicationArchitectureContractTests {
             });
             Set<String> expectedRequires = gradleRequires(module);
             expectedRequires.addAll(EXPECTED_JDK_REQUIRES.get(module));
+            expectedRequires.addAll(EXPECTED_EXTERNAL_REQUIRES.get(module));
             assertEquals(expectedRequires, actualRequires,
                     module + " requires clauses align with Gradle and JDK APIs");
 
@@ -328,7 +370,7 @@ class ApplicationArchitectureContractTests {
         }
         return switch (sourceModule) {
             case "root" -> isCorePackage(importedPackage) || isApplicationPackage(importedPackage)
-                    || isProviderSpiPackage(importedPackage);
+                    || isProviderSpiPackage(importedPackage) || isRootExternalPackage(importedPackage);
             case "core" -> false;
             case "application" -> isCorePackage(importedPackage);
             case "integrations" -> isCorePackage(importedPackage)
@@ -360,6 +402,10 @@ class ApplicationArchitectureContractTests {
 
     private static boolean isProviderSpiPackage(String packageName) {
         return isWithin(packageName, INTEGRATIONS + ".provider");
+    }
+
+    private static boolean isRootExternalPackage(String packageName) {
+        return isWithin(packageName, "lombok.extern.slf4j") || isWithin(packageName, "org.slf4j");
     }
 
     private static boolean isSharedIntegrationPackage(String packageName) {

@@ -18,12 +18,15 @@
 - `:persistence-memory` — in-memory реализация application `LedgerRepository`; Gradle
   `implementation` зависит от `:application`.
 - Root compile-зависимости — `:core`, `:application`, `:integrations`; `runtimeOnly` зависимости —
-  `:integrations-moex`, `:integrations-cbr`, `:persistence-memory`.
+  `:integrations-moex`, `:integrations-cbr`, `:persistence-memory`. Только root использует Lombok
+  (compile-only и annotation processing для main/test) и SLF4J (`slf4j-api` на compile/runtime,
+  `slf4j-simple` только на runtime); остальные модули от них не зависят.
 
 Направление зависимостей: `:integrations` → `:application` → `:core`; `:integrations-moex` и
 `:integrations-cbr` → `:integrations` (транзитивно `:application`/`:core`);
 `:persistence-memory` → `:application`/`:core`. `:core` не зависит от вышележащих модулей, а root
-собирает единственную composition root. Реальные JPMS descriptors настроены: core экспортирует
+собирает единственную composition root. Реальные JPMS descriptors настроены: root статически
+требует Lombok для annotation processing и требует SLF4J API для логирования. Core экспортирует
 шесть доменных пакетов; application транзитивно требует core; shared integrations транзитивно
 требует application, экспортирует provider SPI всем и транспорт/XML/index/generic adapter только
 MOEX/CBR; providers и memory не экспортируют пакеты. Root module `ru.onlychill.mbondsfx` использует
@@ -84,7 +87,9 @@ DTO, UI- или DB-модели.
   проверяемые инварианты. Не подменяйте неизвестные значения нулем или предполагаемыми правилами
   выпуска.
 - Не добавляйте внешние production-зависимости и не меняйте финансовое поведение без явного
-  требования. Для test/coverage используются JUnit Jupiter 5.12.2, JUnit Platform 1.12.2 и JaCoCo
+  требования. Разрешенные по явному запросу Lombok и SLF4J остаются только в root composition
+  module: Lombok не входит в runtime distribution, SLF4J Simple — его runtime backend. Для
+  test/coverage используются JUnit Jupiter 5.12.2, JUnit Platform 1.12.2 и JaCoCo
   0.8.13; не переносите тестовые библиотеки или JaCoCo agent в production/runtime classpath.
 - Если архитектурную границу намеренно меняют, обновите соответствующие инструкции и документы
   вместе с кодом; не оставляйте их противоречащими новой границе.

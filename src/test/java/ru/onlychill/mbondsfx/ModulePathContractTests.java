@@ -54,6 +54,11 @@ public final class ModulePathContractTests {
         contract.inspectProductionModules();
     }
 
+    @Test
+    void slf4jBackendLogsCliErrorsOnModulePath() throws Exception {
+        contract.assertSlf4jErrorLogging();
+    }
+
     @ParameterizedTest(name = "installed start script: {0}")
     @MethodSource("profileCases")
     void installedStartScriptRunsEachProfile(String label, List<String> args, String expected) throws Exception {

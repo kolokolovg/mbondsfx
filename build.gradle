@@ -7,6 +7,8 @@ group = 'ru.onlychill'
 version = '1.0-SNAPSHOT'
 
 ext.junitVersion = '5.12.2'
+ext.lombokVersion = '1.18.48'
+ext.slf4jVersion = '2.0.20'
 
 def aggregateCoverageReport = tasks.register('jacocoAggregateReport',
         org.gradle.testing.jacoco.tasks.JacocoReport) {
@@ -83,9 +85,15 @@ dependencies {
     implementation project(':core')
     implementation project(':application')
     implementation project(':integrations')
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
+    testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
     runtimeOnly project(':integrations-moex')
     runtimeOnly project(':integrations-cbr')
     runtimeOnly project(':persistence-memory')
+    runtimeOnly "org.slf4j:slf4j-simple:${slf4jVersion}"
     testImplementation platform("org.junit:junit-bom:${junitVersion}")
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

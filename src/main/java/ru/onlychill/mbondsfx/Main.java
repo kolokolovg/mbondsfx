@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.TreeMap;
 import java.util.function.Function;
+import lombok.extern.slf4j.Slf4j;
 import ru.onlychill.mbondsfx.application.port.LedgerRepository;
 import ru.onlychill.mbondsfx.application.port.LedgerRepositoryFactory;
 import ru.onlychill.mbondsfx.application.port.RepositoryConfig;
@@ -15,6 +16,7 @@ import ru.onlychill.mbondsfx.integrations.provider.BondReferenceDataSourceProvid
 import ru.onlychill.mbondsfx.integrations.provider.IndexValueSourceProvider;
 import ru.onlychill.mbondsfx.integrations.provider.ProviderContext;
 
+@Slf4j
 public final class Main {
     private Main() {
     }
@@ -24,7 +26,7 @@ public final class Main {
             run(CliOptions.parse(args));
         } catch (RuntimeException failure) {
             String message = failure.getMessage();
-            System.err.println("mbondsfx: " + (message == null ? failure.getClass().getSimpleName() : message));
+            log.error("mbondsfx: {}", message == null ? failure.getClass().getSimpleName() : message);
             System.exit(2);
         }
     }

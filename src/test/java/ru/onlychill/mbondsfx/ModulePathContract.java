@@ -31,6 +31,8 @@ final class ModulePathContract {
     private static final String MOEX_MODULE = "ru.onlychill.mbondsfx.integrations.moex";
     private static final String CBR_MODULE = "ru.onlychill.mbondsfx.integrations.cbr";
     private static final String MEMORY_MODULE = "ru.onlychill.mbondsfx.persistence.memory";
+    private static final String SLF4J_API_MODULE = "org.slf4j";
+    private static final String SLF4J_SIMPLE_MODULE = "org.slf4j.simple";
     private static final String BOND_SERVICE =
             "ru.onlychill.mbondsfx.integrations.provider.BondReferenceDataSourceProvider";
     private static final String INDEX_SERVICE =
@@ -115,6 +117,22 @@ final class ModulePathContract {
 
     void inspectProductionModules() {
         ModuleDescriptor root = descriptors.get(ROOT_MODULE);
+        if (!installedModules.containsKey(SLF4J_API_MODULE)
+                || !installedModules.containsKey(SLF4J_SIMPLE_MODULE)) {
+            throw new AssertionError("Installed distribution must contain the SLF4J API and Simple backend; found "
+                    + installedModules.keySet());
+        }
+        if (installedModules.containsKey("lombok") || installedJars.stream()
+                .anyMatch(jar -> jar.getFileName().toString().toLowerCase(java.util.Locale.ROOT).contains("lombok"))) {
+            throw new AssertionError("Lombok must not be shipped in the installed runtime distribution");
+        }
+        if (root.requires().stream().noneMatch(requirement -> requirement.name().equals(SLF4J_API_MODULE))) {
+            throw new AssertionError("Root descriptor does not require the SLF4J API module");
+        }
+        if (root.requires().stream().noneMatch(requirement -> requirement.name().equals("lombok")
+                && requirement.modifiers().contains(ModuleDescriptor.Requires.Modifier.STATIC))) {
+            throw new AssertionError("Root descriptor must declare Lombok as a static requirement");
+        }
         for (String service : List.of(BOND_SERVICE, INDEX_SERVICE, REPOSITORY_SERVICE)) {
             if (!root.uses().contains(service)) {
                 throw new AssertionError("Root descriptor does not use service " + service);
@@ -161,6 +179,21 @@ final class ModulePathContract {
         assertProfileOutput(result, expected);
     }
 
+    void assertSlf4jErrorLogging() throws Exception {
+        ProcessResult result = runProcess("slf4j-error-diagnostic",
+                javaModuleCommand(installedJars, List.of("--invalid=x"), false), PROCESS_TIMEOUT);
+        if (result.exitCode() != 2) {
+            throw new AssertionError("Expected CLI error exit status 2; got " + result.exitCode()
+                    + "; diagnostics:\n" + result.output());
+        }
+        if (!result.output().contains("ERROR ru.onlychill.mbondsfx.Main")
+                || !result.output().contains("mbondsfx: Unknown option '--invalid'")) {
+            throw new AssertionError("SLF4J backend did not emit the CLI error diagnostic; output:\n"
+                    + result.output());
+        }
+        assertNoSlf4jProviderWarning(result.output());
+    }
+
     private List<String> javaModuleCommand(List<Path> modulePath, List<String> appArgs,
                                            boolean includeAllModules) {
         List<String> command = new ArrayList<>(List.of(javaExecutable.toString(), "--module-path",
@@ -175,6 +208,7 @@ final class ModulePathContract {
 
     private void assertProfileOutput(ProcessResult result, String expectedLine) {
         assertSuccess(result);
+        assertNoSlf4jProviderWarning(result.output());
         List<String> profileLines = result.output().lines()
                 .map(String::trim)
                 .filter(line -> line.startsWith("profile="))
@@ -183,6 +217,13 @@ final class ModulePathContract {
             throw new AssertionError("Expected exactly one deterministic profile line " + expectedLine
                     + " from " + result.label() + "; got " + profileLines + ". Full diagnostics:\n"
                     + result.output());
+        }
+    }
+
+    private static void assertNoSlf4jProviderWarning(String output) {
+        if (output.contains("SLF4J(W):")) {
+            throw new AssertionError("SLF4J provider warnings indicate the module-path backend is not bound; output:\n"
+                    + output);
         }
     }
 

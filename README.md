@@ -15,6 +15,9 @@ Java 21 / Gradle проект для доменной модели облига�
 - `:persistence-memory` — in-memory `LedgerRepository`; `implementation :application`.
 - Root compile-зависимости: `:core`, `:application`, `:integrations`; runtime modules:
   `:integrations-moex`, `:integrations-cbr`, `:persistence-memory`.
+- Lombok annotation processing and SLF4J logging are root-only: Lombok is compile/test-time only,
+  `slf4j-api` is the root compile API, and `slf4j-simple` is its runtime backend. No other module
+  depends on these libraries.
 - JPMS descriptors, qualified provider contracts and root `ServiceLoader` composition are configured.
   Phase 4 passed module-path/distribution blackbox validation (18 checks); SQLite persistence is not implemented.
   The original JavaExec main-runner harness has since been migrated to JUnit without dropping those checks.
