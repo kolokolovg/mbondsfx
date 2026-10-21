@@ -83,6 +83,7 @@ tasks; общий HTML/XML отчет находится в `build/reports/jacoc
 - [Налоги и оценка досрочного закрытия ИИС-3](docs/bond-tax-and-iis3.md)
 - [Доменная модель облигаций](docs/core-domain.md)
 - [Учет портфеля](docs/core-accounting.md)
+- [Версионируемая спецификация double-entry](docs/specs/double-entry/README.md) — проект целевой архитектуры, не описание уже реализованного изменения
 - [Интеграции рыночных данных](docs/core-market-data.md)
 
 Расчеты требуют явных входных данных. Поддержка формул не универсальна: RUONIA averaging не

@@ -4,3 +4,4 @@ build/
 *.iml
 .slim/deepwork/
 /.slim/
+/.opencode/
