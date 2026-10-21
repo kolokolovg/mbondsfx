@@ -29,8 +29,8 @@ public final class ModulePathContractTests {
 
     @BeforeAll
     static void loadBuildInputs() {
-        if (Runtime.version().feature() != 21) {
-            throw new IllegalStateException("Module-path tests require JDK 21; running on " + Runtime.version());
+        if (Runtime.version().feature() != 25) {
+            throw new IllegalStateException("Module-path tests require JDK 25; running on " + Runtime.version());
         }
         projectRoot = requiredPathProperty("projectRoot");
         installDir = requiredPathProperty("installDir");
@@ -50,7 +50,7 @@ public final class ModulePathContractTests {
     }
 
     @Test
-    void installedDescriptorsDeclareThreeTypedServiceBindings() {
+    void installedDescriptorsDeclareFourTypedServiceBindings() {
         contract.inspectProductionModules();
     }
 

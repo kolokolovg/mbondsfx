@@ -13,6 +13,19 @@
   исходными terms.
 - `ru.onlychill.mbondsfx.core.ledger` — учет и операции; сохраняйте `OperationResult` в этом
   пакете: его package-private конструктор намеренно связан с `BondOperations`.
+- `AccountKind.CASH` — доступные денежные остатки портфеля по валютам; `TAX_WITHHELD` — отдельный
+  non-spendable остаток удержаний (его не включает `cashBalances()`, он доступен через
+  `taxWithheldBalances()`). Ненулевые удержания проводятся отдельно `D TAX_WITHHELD / C CASH`;
+  нулевые налоговые проводки отсутствуют. Для buy/sell `Commissions` хранит caller-supplied
+  `brokerCommission` и `otherCommission`, `total()` складывает компоненты, а ненулевой итог
+  проводится отдельно `D COMMISSION_EXPENSE / C CASH`. Существующие Money-overloads принимают
+  уже известный общий итог. Никакие налоговые ставки или брокерские тарифы не вычисляются.
+- Поправка удержания после исходной операции — append-only `OperationKind.TAX_CORRECTION` с
+  `Posting.adjustsOperation()` на исходную операцию, в которой была налоговая проводка.
+  `Ledger.taxWithheldForOperation(originalOperation)` возвращает накопленную сумму с учетом
+  связанных поправок; она не может стать отрицательной. Не создавайте correction-to-correction,
+  не меняйте исходную историю, позицию, купонный доход или PnL. Сохраняйте проверку портфеля,
+  валюты и хронологии при применении.
 - `Ledger.state()` и `Ledger.restore(LedgerState)` — парный recovery seam: восстанавливайте только
   структурно согласованное состояние из явно сохранённых postings, без изменения семантики `apply`.
   Restore не доказывает историческую достижимость; не заявляйте обратное.

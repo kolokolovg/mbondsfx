@@ -33,7 +33,7 @@ public record OperationRecord(OperationResult.OperationKind kind, OperationId op
         }
         boolean securityOperation = switch (kind) {
             case PURCHASE, COUPON, AMORTIZATION, SALE -> true;
-            case OPENING, DEPOSIT, WITHDRAWAL -> false;
+            case OPENING, DEPOSIT, WITHDRAWAL, TAX_CORRECTION -> false;
         };
         if (securityOperation != (positionBefore.isPresent() && positionAfter.isPresent())
                 || (!securityOperation && (positionBefore.isPresent() || positionAfter.isPresent()))) {

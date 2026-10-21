@@ -23,7 +23,7 @@ import ru.onlychill.mbondsfx.integrations.xml.SecureXml;
 
 /** Raw-data-only adapter for the public MOEX ISS bond endpoints. */
 public final class MoexBondAdapter implements MarketDataPort {
-    private static final URI DEFAULT_BASE_URI = URI.create("https://iss.moex.com/iss");
+    private static final URI DEFAULT_BASE_URI = URI.create("http://iss.moex.com/iss");
     private static final Pattern SECID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final int PAGE_SIZE = 20;
     private static final int MAX_PAGES_PER_BLOCK = 1_000;
@@ -32,25 +32,49 @@ public final class MoexBondAdapter implements MarketDataPort {
 
     private final Transport transport;
     private final URI baseUri;
+    private final long maxResponseBytes;
+    private final SecureXml.Limits xmlLimits;
+    private final int maxDescriptionRows;
+    private final int maxPageRows;
 
     public MoexBondAdapter(Transport transport) {
         this(transport, DEFAULT_BASE_URI);
     }
 
-    /** Custom base URI is useful for deterministic fixtures; production defaults to official HTTPS. */
+    /** Custom base URI is useful for deterministic fixtures; production defaults to the official ISS endpoint. */
     public MoexBondAdapter(Transport transport, URI baseUri) {
+        this(transport, baseUri, MoexProviderSettings.DEFAULT_MAX_RESPONSE_BYTES,
+                defaultXmlLimits(), MoexProviderSettings.DEFAULT_MAX_DESCRIPTION_ROWS,
+                MoexProviderSettings.DEFAULT_MAX_PAGE_ROWS);
+    }
+
+    /** Explicit response and XML budgets; the legacy constructors use finite MOEX defaults. */
+    public MoexBondAdapter(
+            Transport transport,
+            URI baseUri,
+            long maxResponseBytes,
+            SecureXml.Limits xmlLimits,
+            int maxDescriptionRows,
+            int maxPageRows) {
         this.transport = Objects.requireNonNull(transport, "transport");
         this.baseUri = validateBaseUri(baseUri);
+        if (maxResponseBytes <= 0 || maxDescriptionRows <= 0 || maxPageRows <= 0) {
+            throw new IllegalArgumentException("MOEX response limits must be positive");
+        }
+        this.maxResponseBytes = maxResponseBytes;
+        this.xmlLimits = Objects.requireNonNull(xmlLimits, "xmlLimits");
+        this.maxDescriptionRows = maxDescriptionRows;
+        this.maxPageRows = maxPageRows;
     }
 
     @Override
     public Optional<BondMarketData> bond(SecurityId moexSecid) {
         Objects.requireNonNull(moexSecid, "moexSecid");
         String secid = validateSecid(moexSecid.value());
-        String descriptionXml = transport.send(Transport.Request.get(uri(
-                "/securities/" + secid + ".xml?iss.meta=off&iss.only=description")));
-        Element descriptionBlock = SecureXml.block(SecureXml.parse(descriptionXml), "description");
-        List<Element> descriptionRows = SecureXml.rows(descriptionBlock, "description");
+        String descriptionXml = response(transport.send(Transport.Request.get(uri(
+                "/securities/" + secid + ".xml?iss.meta=off&iss.only=description"))));
+        Element descriptionBlock = SecureXml.block(SecureXml.parse(descriptionXml, xmlLimits), "description");
+        List<Element> descriptionRows = SecureXml.rows(descriptionBlock, "description", maxDescriptionRows);
         if (descriptionRows.isEmpty()) {
             return Optional.empty();
         }
@@ -91,8 +115,9 @@ public final class MoexBondAdapter implements MarketDataPort {
             }
             URI pageUri = uri("/securities/" + secid + "/bondization.xml?iss.meta=off&iss.only="
                     + block + "&limit=" + PAGE_SIZE + "&start=" + offset);
-            Document document = SecureXml.parse(transport.send(Transport.Request.get(pageUri)));
-            List<Element> pageRows = SecureXml.rows(SecureXml.block(document, block), block);
+            String xml = response(transport.send(Transport.Request.get(pageUri)));
+            Document document = SecureXml.parse(xml, xmlLimits);
+            List<Element> pageRows = SecureXml.rows(SecureXml.block(document, block), block, maxPageRows);
             pages++;
             if (pageRows.isEmpty()) {
                 return allRows;
@@ -123,6 +148,46 @@ public final class MoexBondAdapter implements MarketDataPort {
             result.put(attr.getNodeName(), attr.getNodeValue());
         }
         return Map.copyOf(result);
+    }
+
+    private String response(String xml) {
+        Objects.requireNonNull(xml, "MOEX transport response");
+        if (utf8LengthExceeds(xml, maxResponseBytes)) {
+            throw new IllegalArgumentException("MOEX response exceeded maximum byte count of " + maxResponseBytes);
+        }
+        return xml;
+    }
+
+    private static boolean utf8LengthExceeds(String value, long limit) {
+        long bytes = 0;
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (character <= 0x7f) {
+                bytes++;
+            } else if (character <= 0x7ff) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(character) && index + 1 < value.length()
+                    && Character.isLowSurrogate(value.charAt(index + 1))) {
+                bytes += 4;
+                index++;
+            } else if (Character.isSurrogate(character)) {
+                // The JDK UTF-8 encoder's replacement for an unpaired surrogate is one byte.
+                bytes++;
+            } else {
+                bytes += 3;
+            }
+            if (bytes > limit) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static SecureXml.Limits defaultXmlLimits() {
+        return new SecureXml.Limits(MoexProviderSettings.DEFAULT_MAX_XML_DEPTH,
+                MoexProviderSettings.DEFAULT_MAX_XML_ATTRIBUTES,
+                MoexProviderSettings.DEFAULT_MAX_XML_ATTRIBUTE_LENGTH,
+                MoexProviderSettings.DEFAULT_MAX_XML_TEXT_LENGTH);
     }
 
     private static BondMarketData.CouponRow parseCoupon(Element row) {

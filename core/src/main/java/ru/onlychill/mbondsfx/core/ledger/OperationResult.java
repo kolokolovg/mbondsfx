@@ -8,7 +8,9 @@ import ru.onlychill.mbondsfx.core.id.OperationId;
 
 /** Immutable outcome created by the supported operations in {@link BondOperations}. */
 public final class OperationResult {
-    public enum OperationKind { OPENING, DEPOSIT, WITHDRAWAL, PURCHASE, COUPON, AMORTIZATION, SALE }
+    public enum OperationKind {
+        OPENING, DEPOSIT, WITHDRAWAL, PURCHASE, COUPON, AMORTIZATION, SALE, TAX_CORRECTION
+    }
 
     private final OperationKind kind;
     private final OperationId operation;
@@ -33,10 +35,16 @@ public final class OperationResult {
             if (!operation.equals(posting.operation()) || !date.equals(posting.date())) {
                 throw new IllegalArgumentException("Posting operation and date must match the result");
             }
+            if ((kind == OperationKind.TAX_CORRECTION) != posting.adjustsOperation().isPresent()) {
+                throw new IllegalArgumentException("Only tax correction postings may link to an adjusted operation");
+            }
+        }
+        if (kind == OperationKind.TAX_CORRECTION && this.postings.size() != 1) {
+            throw new IllegalArgumentException("A tax correction must contain exactly one posting");
         }
         boolean securityOperation = switch (kind) {
             case PURCHASE, COUPON, AMORTIZATION, SALE -> true;
-            case OPENING, DEPOSIT, WITHDRAWAL -> false;
+            case OPENING, DEPOSIT, WITHDRAWAL, TAX_CORRECTION -> false;
         };
         if (securityOperation != (this.positionBefore.isPresent() && this.positionAfter.isPresent())) {
             throw new IllegalArgumentException("Position snapshots do not match operation kind");

@@ -6,6 +6,7 @@ import java.util.Optional;
 import ru.onlychill.mbondsfx.core.id.PortfolioId;
 import ru.onlychill.mbondsfx.core.id.SecurityId;
 
+/** Account identity includes portfolio, kind, optional security, and currency-specific subaccount. */
 public record Account(PortfolioId portfolio, AccountKind kind,
                       Optional<SecurityId> security, Currency currency) {
     public Account {

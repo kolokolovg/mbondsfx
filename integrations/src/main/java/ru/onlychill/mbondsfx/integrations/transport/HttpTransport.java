@@ -6,19 +6,31 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 
 /** JDK HTTP transport for the public, keyless market-data endpoints. */
 public final class HttpTransport implements Transport {
+    private static final long DEFAULT_MAX_RESPONSE_BYTES = 2L * 1024 * 1024;
+
     private final HttpClient client;
     private final Duration requestTimeout;
+    private final long maxResponseBytes;
 
     public HttpTransport(HttpClient client, Duration requestTimeout) {
+        this(client, requestTimeout, DEFAULT_MAX_RESPONSE_BYTES);
+    }
+
+    public HttpTransport(HttpClient client, Duration requestTimeout, long maxResponseBytes) {
         this.client = Objects.requireNonNull(client, "client");
         this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
         if (requestTimeout.isZero() || requestTimeout.isNegative()) {
             throw new IllegalArgumentException("requestTimeout must be positive");
         }
+        if (maxResponseBytes <= 0) {
+            throw new IllegalArgumentException("maxResponseBytes must be positive");
+        }
+        this.maxResponseBytes = maxResponseBytes;
     }
 
     @Override
@@ -38,7 +50,20 @@ public final class HttpTransport implements Transport {
 
         try {
             HttpResponse<String> response = client.send(builder.build(),
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    responseInfo -> {
+                        if (!hasSupportedContentEncoding(responseInfo.headers().allValues("Content-Encoding"))) {
+                            // Discard unsupported representations while applying the same byte cap.
+                            return HttpResponse.BodyHandlers.limiting(
+                                    HttpResponse.BodyHandlers.<String>replacing(null), maxResponseBytes)
+                                    .apply(responseInfo);
+                        }
+                        return HttpResponse.BodyHandlers.limiting(
+                                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8), maxResponseBytes)
+                                .apply(responseInfo);
+                    });
+            if (!hasSupportedContentEncoding(response.headers().allValues("Content-Encoding"))) {
+                throw new TransportException("Unsupported Content-Encoding for " + request.uri());
+            }
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 HttpStatusException statusFailure = new HttpStatusException(
                         response.statusCode(), request.uri(), response.body());
@@ -51,5 +76,16 @@ public final class HttpTransport implements Transport {
         } catch (IOException failure) {
             throw new TransportException("HTTP request failed for " + request.uri(), failure);
         }
+    }
+
+    private static boolean hasSupportedContentEncoding(List<String> encodings) {
+        for (String header : encodings) {
+            for (String encoding : header.split(",", -1)) {
+                if (!"identity".equalsIgnoreCase(encoding.trim())) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 }

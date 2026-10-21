@@ -7,7 +7,6 @@ group = 'ru.onlychill'
 version = '1.0-SNAPSHOT'
 
 ext.junitVersion = '5.12.2'
-ext.lombokVersion = '1.18.48'
 ext.slf4jVersion = '2.0.20'
 
 def aggregateCoverageReport = tasks.register('jacocoAggregateReport',
@@ -29,7 +28,7 @@ allprojects {
     def javaProject = it
     javaProject.plugins.withId('java') {
         javaProject.pluginManager.apply('jacoco')
-        javaProject.jacoco.toolVersion = '0.8.13'
+        javaProject.jacoco.toolVersion = '0.8.15'
 
         def testTask = javaProject.tasks.named('test', Test)
         def reportTask = javaProject.tasks.named('jacocoTestReport',
@@ -71,7 +70,7 @@ subprojects {
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
     modularity.inferModulePath = true
 }
@@ -85,10 +84,6 @@ dependencies {
     implementation project(':core')
     implementation project(':application')
     implementation project(':integrations')
-    compileOnly "org.projectlombok:lombok:${lombokVersion}"
-    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
-    testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
-    testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
     implementation "org.slf4j:slf4j-api:${slf4jVersion}"
     runtimeOnly project(':integrations-moex')
     runtimeOnly project(':integrations-cbr')
@@ -113,7 +108,7 @@ tasks.named('test', Test) {
     useJUnitPlatform()
     dependsOn installDistribution
     javaLauncher = javaToolchains.launcherFor {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
     doFirst {
         systemProperty 'projectRoot', rootProject.projectDir.absolutePath

@@ -39,6 +39,8 @@ final class ModulePathContract {
             "ru.onlychill.mbondsfx.integrations.provider.IndexValueSourceProvider";
     private static final String REPOSITORY_SERVICE =
             "ru.onlychill.mbondsfx.application.port.LedgerRepositoryFactory";
+    private static final String INVESTMENT_ACCOUNT_REPOSITORY_SERVICE =
+            "ru.onlychill.mbondsfx.application.port.InvestmentAccountRepositoryFactory";
     private static final Duration PROCESS_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration COMPILER_TIMEOUT = Duration.ofSeconds(60);
 
@@ -129,11 +131,11 @@ final class ModulePathContract {
         if (root.requires().stream().noneMatch(requirement -> requirement.name().equals(SLF4J_API_MODULE))) {
             throw new AssertionError("Root descriptor does not require the SLF4J API module");
         }
-        if (root.requires().stream().noneMatch(requirement -> requirement.name().equals("lombok")
-                && requirement.modifiers().contains(ModuleDescriptor.Requires.Modifier.STATIC))) {
-            throw new AssertionError("Root descriptor must declare Lombok as a static requirement");
+        if (root.requires().stream().anyMatch(requirement -> requirement.name().equals("lombok"))) {
+            throw new AssertionError("Root descriptor must not require Lombok");
         }
-        for (String service : List.of(BOND_SERVICE, INDEX_SERVICE, REPOSITORY_SERVICE)) {
+        for (String service : List.of(BOND_SERVICE, INDEX_SERVICE, REPOSITORY_SERVICE,
+                INVESTMENT_ACCOUNT_REPOSITORY_SERVICE)) {
             if (!root.uses().contains(service)) {
                 throw new AssertionError("Root descriptor does not use service " + service);
             }
@@ -141,6 +143,7 @@ final class ModulePathContract {
         assertProviderModule(BOND_SERVICE, MOEX_MODULE);
         assertProviderModule(INDEX_SERVICE, CBR_MODULE);
         assertProviderModule(REPOSITORY_SERVICE, MEMORY_MODULE);
+        assertProviderModule(INVESTMENT_ACCOUNT_REPOSITORY_SERVICE, MEMORY_MODULE);
     }
 
     private void assertProviderModule(String service, String expectedModule) {
@@ -273,7 +276,7 @@ final class ModulePathContract {
         Files.writeString(moduleInfoPath, moduleInfo);
         Files.writeString(javaSourcePath, source);
         ProcessResult compilation = runProcess("compile-" + moduleName,
-                List.of(javac.toString(), "--release", "21", "--module-path", joinPaths(modulePath),
+                List.of(javac.toString(), "--release", "25", "--module-path", joinPaths(modulePath),
                         "-d", output.toString(), moduleInfoPath.toString(), javaSourcePath.toString()),
                 COMPILER_TIMEOUT);
         assertSuccess(compilation);
@@ -369,7 +372,7 @@ final class ModulePathContract {
         Files.writeString(moduleInfoPath, moduleInfo);
         Files.writeString(sourcePath, source);
         ProcessResult result = runProcess("compile-forbidden-imports",
-                List.of(javac.toString(), "--release", "21", "--module-path", joinPaths(installedJars),
+                List.of(javac.toString(), "--release", "25", "--module-path", joinPaths(installedJars),
                         "-d", output.toString(), moduleInfoPath.toString(), sourcePath.toString()),
                 COMPILER_TIMEOUT);
         if (result.exitCode() == 0) {

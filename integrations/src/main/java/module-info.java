@@ -1,3 +1,6 @@
+// Qualified-export targets depend on this module and are compiled after it.
+// Keep those exports restricted without introducing reverse dependencies.
+@SuppressWarnings("module")
 module ru.onlychill.mbondsfx.integrations {
     requires transitive ru.onlychill.mbondsfx.application;
     requires java.net.http;

@@ -13,16 +13,31 @@ import ru.onlychill.mbondsfx.integrations.provider.IndexValueSourceProvider;
 import ru.onlychill.mbondsfx.integrations.provider.ProviderContext;
 import ru.onlychill.mbondsfx.integrations.transport.HttpTransport;
 import ru.onlychill.mbondsfx.integrations.transport.Transport;
+import ru.onlychill.mbondsfx.integrations.xml.SecureXml;
 
 /** Shared-SPI factory for exact-date CBR index values. */
 public final class CbrProviderFactory implements IndexValueSourceProvider {
     static final String ENDPOINT_SETTING = "endpoint";
     static final String CONNECT_TIMEOUT_SETTING = "connect-timeout";
     static final String REQUEST_TIMEOUT_SETTING = "request-timeout";
+    static final String MAX_RESPONSE_BYTES_SETTING = "max-response-bytes";
+    static final String MAX_XML_DEPTH_SETTING = "max-xml-depth";
+    static final String MAX_XML_ATTRIBUTES_SETTING = "max-xml-attributes";
+    static final String MAX_XML_ATTRIBUTE_LENGTH_SETTING = "max-xml-attribute-length";
+    static final String MAX_XML_TEXT_LENGTH_SETTING = "max-xml-text-length";
+    static final String MAX_SERIES_ROWS_SETTING = "max-series-rows";
     static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
     static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    static final long DEFAULT_MAX_RESPONSE_BYTES = 2L * 1024 * 1024;
+    static final int DEFAULT_MAX_XML_DEPTH = 32;
+    static final int DEFAULT_MAX_XML_ATTRIBUTES = 16;
+    static final int DEFAULT_MAX_XML_ATTRIBUTE_LENGTH = 1024;
+    static final int DEFAULT_MAX_XML_TEXT_LENGTH = 1024;
+    static final int DEFAULT_MAX_SERIES_ROWS = 20_000;
     private static final Set<String> SUPPORTED_SETTINGS = Set.of(
-            ENDPOINT_SETTING, CONNECT_TIMEOUT_SETTING, REQUEST_TIMEOUT_SETTING);
+            ENDPOINT_SETTING, CONNECT_TIMEOUT_SETTING, REQUEST_TIMEOUT_SETTING, MAX_RESPONSE_BYTES_SETTING,
+            MAX_XML_DEPTH_SETTING, MAX_XML_ATTRIBUTES_SETTING, MAX_XML_ATTRIBUTE_LENGTH_SETTING,
+            MAX_XML_TEXT_LENGTH_SETTING, MAX_SERIES_ROWS_SETTING);
 
     private final Transport testTransport;
 
@@ -49,16 +64,34 @@ public final class CbrProviderFactory implements IndexValueSourceProvider {
             HttpClient client = HttpClient.newBuilder()
                     .connectTimeout(configuration.connectTimeout())
                     .build();
-            transport = new HttpTransport(client, configuration.requestTimeout());
+            transport = new HttpTransport(client, configuration.requestTimeout(), configuration.maxResponseBytes());
         }
-        return new IndexValueSourceAdapter(new CbrIndexAdapter(transport, configuration.endpoint()));
+        return new IndexValueSourceAdapter(new CbrIndexAdapter(transport, configuration.endpoint(),
+                configuration.maxResponseBytes(), configuration.xmlLimits(), configuration.maxSeriesRows()));
     }
 
-    record Configuration(URI endpoint, Duration connectTimeout, Duration requestTimeout) {
+    record Configuration(
+            URI endpoint,
+            Duration connectTimeout,
+            Duration requestTimeout,
+            long maxResponseBytes,
+            int maxXmlDepth,
+            int maxXmlAttributes,
+            int maxXmlAttributeLength,
+            int maxXmlTextLength,
+            int maxSeriesRows) {
         Configuration {
             Objects.requireNonNull(endpoint, "endpoint");
             Objects.requireNonNull(connectTimeout, "connectTimeout");
             Objects.requireNonNull(requestTimeout, "requestTimeout");
+            if (maxResponseBytes <= 0 || maxXmlDepth <= 0 || maxXmlAttributes <= 0
+                    || maxXmlAttributeLength <= 0 || maxXmlTextLength <= 0 || maxSeriesRows <= 0) {
+                throw new IllegalArgumentException("CBR response and XML limits must be positive");
+            }
+        }
+
+        SecureXml.Limits xmlLimits() {
+            return new SecureXml.Limits(maxXmlDepth, maxXmlAttributes, maxXmlAttributeLength, maxXmlTextLength);
         }
 
         static Configuration from(ProviderContext context) {
@@ -85,7 +118,15 @@ public final class CbrProviderFactory implements IndexValueSourceProvider {
 
             Duration connectTimeout = duration(settings, CONNECT_TIMEOUT_SETTING, DEFAULT_CONNECT_TIMEOUT);
             Duration requestTimeout = duration(settings, REQUEST_TIMEOUT_SETTING, DEFAULT_REQUEST_TIMEOUT);
-            return new Configuration(endpoint, connectTimeout, requestTimeout);
+            long maxResponseBytes = positiveLong(settings, MAX_RESPONSE_BYTES_SETTING, DEFAULT_MAX_RESPONSE_BYTES);
+            int maxXmlDepth = positiveInt(settings, MAX_XML_DEPTH_SETTING, DEFAULT_MAX_XML_DEPTH);
+            int maxXmlAttributes = positiveInt(settings, MAX_XML_ATTRIBUTES_SETTING, DEFAULT_MAX_XML_ATTRIBUTES);
+            int maxXmlAttributeLength = positiveInt(
+                    settings, MAX_XML_ATTRIBUTE_LENGTH_SETTING, DEFAULT_MAX_XML_ATTRIBUTE_LENGTH);
+            int maxXmlTextLength = positiveInt(settings, MAX_XML_TEXT_LENGTH_SETTING, DEFAULT_MAX_XML_TEXT_LENGTH);
+            int maxSeriesRows = positiveInt(settings, MAX_SERIES_ROWS_SETTING, DEFAULT_MAX_SERIES_ROWS);
+            return new Configuration(endpoint, connectTimeout, requestTimeout, maxResponseBytes, maxXmlDepth,
+                    maxXmlAttributes, maxXmlAttributeLength, maxXmlTextLength, maxSeriesRows);
         }
 
         private static Duration duration(Map<String, String> settings, String key, Duration defaultValue) {
@@ -103,6 +144,31 @@ public final class CbrProviderFactory implements IndexValueSourceProvider {
                 throw new IllegalArgumentException("CBR setting " + key + " must be positive");
             }
             return value;
+        }
+
+        private static long positiveLong(Map<String, String> settings, String key, long defaultValue) {
+            if (!settings.containsKey(key)) {
+                return defaultValue;
+            }
+            long value;
+            try {
+                value = Long.parseLong(settings.get(key));
+            } catch (NumberFormatException invalidNumber) {
+                throw new IllegalArgumentException("CBR setting " + key + " must be a positive integer",
+                        invalidNumber);
+            }
+            if (value <= 0) {
+                throw new IllegalArgumentException("CBR setting " + key + " must be positive");
+            }
+            return value;
+        }
+
+        private static int positiveInt(Map<String, String> settings, String key, int defaultValue) {
+            long value = positiveLong(settings, key, defaultValue);
+            if (value > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("CBR setting " + key + " exceeds the supported integer range");
+            }
+            return (int) value;
         }
     }
 }

@@ -15,9 +15,12 @@
   необходимые JDK `java.net.http`/`java.xml`; он provides SPI и не экспортирует implementation packages.
   Runtime service binding подтверждается отдельным module-path runner, не classpath test suite.
 - Provider принимает `moex.endpoint` (HTTP(S) URI без query/fragment), `moex.connectTimeout` и
-  `moex.requestTimeout` (положительные ISO-8601 `Duration`). Пустые настройки допустимы; значения
-  по умолчанию только настраивают транспорт/endpoint. Неизвестные ключи `moex.*` отклоняются,
-  настройки других capability остаются непрозрачными для этого провайдера.
+  `moex.requestTimeout` (положительные ISO-8601 `Duration`), а также положительные
+  `moex.maxResponseBytes` (512 KiB), `moex.maxXmlDepth` (8), `moex.maxXmlAttributes` (32),
+  `moex.maxXmlAttributeLength` (8192), `moex.maxXmlTextLength` (1024),
+  `moex.maxDescriptionRows` (256) и `moex.maxPageRows` (128). Пустые настройки допустимы;
+  значения по умолчанию только настраивают транспорт/endpoint и защитные бюджеты. Неизвестные
+  ключи `moex.*` отклоняются, настройки других capability остаются непрозрачными для этого провайдера.
 - Sparse mapping публикует только raw-факты: `FACEVALUE` вместе с `FACEUNIT` как единую пару;
   MOEX response не предоставляет observation timestamp в текущем raw DTO. Сырые coupon rows —
   недифференцированное расписание без явного маркера «следующий» или даты `as-of`, поэтому

@@ -112,6 +112,107 @@ class MoexProviderContractTests {
     }
 
     @Test
+    void defaultSettingsUseHttpEndpoint() {
+        assertEquals(URI.create("http://iss.moex.com/iss"), settings(Map.of()).endpoint(),
+                "the default endpoint uses HTTP");
+    }
+
+    @Test
+    void responseLimitSettingsHaveFiniteDefaultsAndAcceptPositiveOverrides() {
+        MoexProviderSettings defaults = settings(Map.of());
+        assertEquals(512L * 1024, defaults.maxResponseBytes(), "default response byte budget");
+        assertEquals(8, defaults.maxXmlDepth(), "default XML depth budget");
+        assertEquals(32, defaults.maxXmlAttributes(), "default attributes-per-element budget");
+        assertEquals(8192, defaults.maxXmlAttributeLength(), "default decoded attribute length budget");
+        assertEquals(1024, defaults.maxXmlTextLength(), "default decoded text length budget");
+        assertEquals(256, defaults.maxDescriptionRows(), "default description row budget");
+        assertEquals(128, defaults.maxPageRows(), "default schedule page row budget");
+
+        MoexProviderSettings custom = settings(Map.of(
+                MoexProviderSettings.MAX_RESPONSE_BYTES, "4096",
+                MoexProviderSettings.MAX_XML_DEPTH, "5",
+                MoexProviderSettings.MAX_XML_ATTRIBUTES, "6",
+                MoexProviderSettings.MAX_XML_ATTRIBUTE_LENGTH, "700",
+                MoexProviderSettings.MAX_XML_TEXT_LENGTH, "80",
+                MoexProviderSettings.MAX_DESCRIPTION_ROWS, "7",
+                MoexProviderSettings.MAX_PAGE_ROWS, "9"));
+        assertEquals(4096L, custom.maxResponseBytes(), "custom byte budget retained");
+        assertEquals(5, custom.maxXmlDepth(), "custom XML depth retained");
+        assertEquals(6, custom.maxXmlAttributes(), "custom attribute count retained");
+        assertEquals(700, custom.maxXmlAttributeLength(), "custom attribute length retained");
+        assertEquals(80, custom.maxXmlTextLength(), "custom text length retained");
+        assertEquals(7, custom.maxDescriptionRows(), "custom description row count retained");
+        assertEquals(9, custom.maxPageRows(), "custom page row count retained");
+
+        Map<String, String> limitKeys = Map.of(
+                MoexProviderSettings.MAX_RESPONSE_BYTES, "0",
+                MoexProviderSettings.MAX_XML_DEPTH, "0",
+                MoexProviderSettings.MAX_XML_ATTRIBUTES, "0",
+                MoexProviderSettings.MAX_XML_ATTRIBUTE_LENGTH, "0",
+                MoexProviderSettings.MAX_XML_TEXT_LENGTH, "0",
+                MoexProviderSettings.MAX_DESCRIPTION_ROWS, "0",
+                MoexProviderSettings.MAX_PAGE_ROWS, "0");
+        limitKeys.forEach((key, value) -> assertThrows(IllegalArgumentException.class,
+                () -> settings(Map.of(key, value)), key + " must reject nonpositive limits"));
+
+        AtomicInteger requests = new AtomicInteger();
+        MoexProviderFactory factory = new MoexProviderFactory(request -> {
+            requests.incrementAndGet();
+            return "";
+        });
+        limitKeys.keySet().forEach(key -> assertThrows(IllegalArgumentException.class,
+                () -> factory.create(new ProviderContext(Map.of(key, "0"))),
+                key + " is validated before provider creation completes"));
+        assertThrows(IllegalArgumentException.class,
+                () -> factory.create(new ProviderContext(Map.of(
+                        MoexProviderSettings.MAX_RESPONSE_BYTES, "9223372036854775808"))),
+                "byte limit overflow is rejected");
+        assertThrows(IllegalArgumentException.class,
+                () -> factory.create(new ProviderContext(Map.of(MoexProviderSettings.MAX_XML_DEPTH, "2147483648"))),
+                "XML limit overflow is rejected");
+        assertEquals(0, requests.get(), "invalid limit settings fail before any transport request");
+    }
+
+    @Test
+    void customLimitsReachAdapterWhenFakeTransportBypassesHttpGuard() {
+        AtomicInteger calls = new AtomicInteger();
+        MoexProviderFactory factory = new MoexProviderFactory(request -> {
+            calls.incrementAndGet();
+            return "<document><data id=\"description\"><rows>"
+                    + "<row name=\"ONE\" value=\"1\"/><row name=\"TWO\" value=\"2\"/>"
+                    + "</rows></data></document>";
+        });
+        BondReferenceDataSource source = factory.create(new ProviderContext(Map.of(
+                MoexProviderSettings.MAX_RESPONSE_BYTES, "4096",
+                MoexProviderSettings.MAX_DESCRIPTION_ROWS, "1")));
+
+        assertEquals(0, calls.get(), "custom limits are configured without sending a request");
+        assertThrows(IllegalArgumentException.class,
+                () -> source.reference(new SecurityId("LIMITED")),
+                "the configured row maximum is applied to a fake transport response");
+        assertEquals(1, calls.get(), "the overflowing description is rejected on its first response");
+
+        AtomicInteger byteCalls = new AtomicInteger();
+        BondReferenceDataSource byteLimitedSource = new MoexProviderFactory(request -> {
+            byteCalls.incrementAndGet();
+            return "larger than one byte";
+        }).create(new ProviderContext(Map.of(MoexProviderSettings.MAX_RESPONSE_BYTES, "1")));
+        assertThrows(IllegalArgumentException.class,
+                () -> byteLimitedSource.reference(new SecurityId("BYTE")),
+                "the adapter enforces configured byte limits even for a fake Transport");
+        assertEquals(1, byteCalls.get(), "fake transport is called once before its response is rejected");
+
+        String depthLimitedXml = "<document><data id=\"description\"><rows>"
+                + "<row name=\"FIELD\" value=\"1\"/></rows></data></document>";
+        BondReferenceDataSource depthLimitedSource = new MoexProviderFactory(request -> depthLimitedXml)
+                .create(new ProviderContext(Map.of(MoexProviderSettings.MAX_RESPONSE_BYTES, "4096",
+                        MoexProviderSettings.MAX_XML_DEPTH, "3")));
+        assertThrows(IllegalArgumentException.class,
+                () -> depthLimitedSource.reference(new SecurityId("DEPTH")),
+                "the configured XML depth is passed to parsing for a fake transport response");
+    }
+
+    @Test
     void reportedValuesMapExactlyAndUnknownsStaySparse() {
         BondMarketData raw = new BondMarketData(
                 Map.of("FACEVALUE", "42.5000", "FACEUNIT", "GBP", "FUTURE_FIELD", "preserved"),

@@ -1,6 +1,7 @@
 package ru.onlychill.mbondsfx.integrations.moex;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -11,6 +12,7 @@ import ru.onlychill.mbondsfx.core.id.SecurityId;
 import ru.onlychill.mbondsfx.integrations.marketdata.model.BondMarketData;
 import ru.onlychill.mbondsfx.integrations.moex.internal.MoexBondAdapter;
 import ru.onlychill.mbondsfx.integrations.transport.Transport;
+import ru.onlychill.mbondsfx.integrations.xml.SecureXml;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -20,6 +22,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AdapterContractTests {
     private static final URI MOEX_FIXTURE = URI.create("https://fixture.invalid/iss");
     private static final LocalDate START = LocalDate.of(2026, 1, 1);
+
+    @Test
+    void defaultEndpointSendsHttpRequest() {
+        List<URI> requests = new ArrayList<>();
+        Transport fixture = request -> {
+            requests.add(request.uri());
+            return "<document><data id=\"description\"><rows/></data></document>";
+        };
+
+        assertTrue(new MoexBondAdapter(fixture).bond(new SecurityId("TEST")).isEmpty(),
+                "empty fixture description identifies an unknown security");
+        assertEquals(List.of(URI.create("http://iss.moex.com/iss/securities/TEST.xml"
+                + "?iss.meta=off&iss.only=description")), requests,
+                "default adapter request uses HTTP without making a network call");
+    }
+
     @Test
     void independentPaginationAndRawValues() {
         PagingTransport transport = new PagingTransport();
@@ -105,10 +123,97 @@ class AdapterContractTests {
                         .bond(new SecurityId("XXE")), "DOCTYPE and external entities rejected");
     }
 
+    @Test
+    void fakeTransportResponseByteLimitCountsUtf8Exactly() {
+        String xml = "<document><data id=\"description\"><rows/></data></document><!--Ж-->";
+        long exactBytes = xml.getBytes(StandardCharsets.UTF_8).length;
+        Transport fixture = request -> xml;
+
+        assertTrue(limitedAdapter(fixture, exactBytes, defaultXmlLimits(), 256, 128)
+                .bond(new SecurityId("UTF8")).isEmpty(), "a response exactly at the byte limit is accepted");
+        assertThrows(IllegalArgumentException.class,
+                () -> limitedAdapter(fixture, exactBytes - 1, defaultXmlLimits(), 256, 128)
+                        .bond(new SecurityId("UTF8")),
+                "a multibyte UTF-8 response one byte over the limit is rejected before parsing");
+    }
+
+    @Test
+    void xmlLimitsAreAppliedToEveryFakeResponse() {
+        String row = "<row name=\"F\" value=\"ЖЖЖЖЖЖЖЖЖЖЖЖЖ\"/>";
+        String description = descriptionWithRows(row);
+        Transport fixture = request -> {
+            if (!request.uri().getPath().endsWith("bondization.xml")) {
+                return description;
+            }
+            return pageXml(query(request.uri(), "iss.only"), List.of());
+        };
+
+        assertThrows(IllegalArgumentException.class,
+                () -> limitedAdapter(fixture, 4096, new SecureXml.Limits(3, 32, 8192, 1024), 256, 128)
+                        .bond(new SecurityId("DEPTH")), "too-deep response is rejected");
+        assertThrows(IllegalArgumentException.class,
+                () -> limitedAdapter(fixture, 4096, new SecureXml.Limits(8, 1, 8192, 1024), 256, 128)
+                        .bond(new SecurityId("ATTRS")), "too many attributes on a row are rejected");
+        assertThrows(IllegalArgumentException.class,
+                () -> limitedAdapter(fixture, 4096, new SecureXml.Limits(8, 32, 11, 1024), 256, 128)
+                        .bond(new SecurityId("ATTRLEN")), "decoded attribute values over the limit are rejected");
+
+        String textXml = "<document><data id=\"description\"><rows>ЖЖЖ</rows></data></document>";
+        assertThrows(IllegalArgumentException.class,
+                () -> limitedAdapter(request -> textXml, 4096,
+                        new SecureXml.Limits(8, 32, 8192, 2), 256, 128).bond(new SecurityId("TEXT")),
+                "decoded direct text over the limit is rejected");
+
+        assertEquals("ЖЖЖЖЖЖЖЖЖЖЖЖЖ", limitedAdapter(fixture, 4096,
+                new SecureXml.Limits(4, 2, 13, 1024), 256, 128)
+                .bond(new SecurityId("EXACT")).orElseThrow().description().get("F"),
+                "values exactly within each custom XML limit are accepted");
+    }
+
+    @Test
+    void descriptionAndSchedulePageRowsAreBoundedBeforeCollection() {
+        String twoDescriptionRows = descriptionWithRows(
+                "<row name=\"ONE\" value=\"1\"/><row name=\"TWO\" value=\"2\"/>");
+        assertThrows(IllegalArgumentException.class,
+                () -> limitedAdapter(request -> twoDescriptionRows, 4096, defaultXmlLimits(), 1, 128)
+                        .bond(new SecurityId("DESCRIPTION")),
+                "description rows over the configured maximum are rejected");
+
+        AtomicInteger requests = new AtomicInteger();
+        Transport pageOverflow = request -> {
+            requests.incrementAndGet();
+            if (!request.uri().getPath().endsWith("bondization.xml")) {
+                return descriptionXml();
+            }
+            String block = query(request.uri(), "iss.only");
+            return pageXml(block, List.of("<row/>", "<row/>"));
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> limitedAdapter(pageOverflow, 4096, defaultXmlLimits(), 256, 1)
+                        .bond(new SecurityId("PAGE")),
+                "schedule rows over the configured per-page maximum are rejected");
+        assertEquals(2, requests.get(), "the overflowing page is rejected without fetching another page");
+    }
+
     private static String descriptionXml() {
         return "<document><data id=\"description\"><rows>"
                 + "<row name=\"SECID\" value=\"TEST\"/><row name=\"FUTURE_FIELD\" value=\"raw unknown value\"/>"
                 + "</rows></data></document>";
+    }
+
+    private static String descriptionWithRows(String rows) {
+        return "<document><data id=\"description\"><rows>" + rows + "</rows></data></document>";
+    }
+
+    private static SecureXml.Limits defaultXmlLimits() {
+        return new SecureXml.Limits(8, 32, 8192, 1024);
+    }
+
+    private static MoexBondAdapter limitedAdapter(
+            Transport transport, long maxResponseBytes, SecureXml.Limits xmlLimits,
+            int maxDescriptionRows, int maxPageRows) {
+        return new MoexBondAdapter(transport, MOEX_FIXTURE, maxResponseBytes, xmlLimits,
+                maxDescriptionRows, maxPageRows);
     }
 
     private static String pageXml(String block, List<String> rows) {

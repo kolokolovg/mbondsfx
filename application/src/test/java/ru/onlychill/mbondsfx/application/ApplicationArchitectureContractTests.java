@@ -69,11 +69,7 @@ class ApplicationArchitectureContractTests {
             "integrations-cbr", Set.of("implementation :integrations"),
             "persistence-memory", Set.of("implementation :application"));
     private static final Map<String, Set<String>> ALLOWED_EXTERNAL_DEPENDENCIES = Map.of(
-            "root", Set.of("compileOnly org.projectlombok:lombok:${lombokVersion}",
-                    "annotationProcessor org.projectlombok:lombok:${lombokVersion}",
-                    "testCompileOnly org.projectlombok:lombok:${lombokVersion}",
-                    "testAnnotationProcessor org.projectlombok:lombok:${lombokVersion}",
-                    "implementation org.slf4j:slf4j-api:${slf4jVersion}",
+            "root", Set.of("implementation org.slf4j:slf4j-api:${slf4jVersion}",
                     "runtimeOnly org.slf4j:slf4j-simple:${slf4jVersion}"),
             "core", Set.of(),
             "application", Set.of(),
@@ -97,7 +93,8 @@ class ApplicationArchitectureContractTests {
     private static final Map<String, Set<String>> EXPECTED_USES = Map.of(
             "root", Set.of(INTEGRATIONS + ".provider.BondReferenceDataSourceProvider",
                     INTEGRATIONS + ".provider.IndexValueSourceProvider",
-                    APPLICATION + ".port.LedgerRepositoryFactory"),
+                    APPLICATION + ".port.LedgerRepositoryFactory",
+                    APPLICATION + ".port.InvestmentAccountRepositoryFactory"),
             "core", Set.of(),
             "application", Set.of(),
             "integrations", Set.of(),
@@ -114,6 +111,8 @@ class ApplicationArchitectureContractTests {
             "integrations-cbr", Set.of(INTEGRATIONS + ".provider.IndexValueSourceProvider with "
                     + CBR + ".internal.CbrProviderFactory"),
             "persistence-memory", Set.of(APPLICATION + ".port.LedgerRepositoryFactory with "
+                    + MEMORY + ".InMemoryRepositoryFactory",
+                    APPLICATION + ".port.InvestmentAccountRepositoryFactory with "
                     + MEMORY + ".InMemoryRepositoryFactory"));
     private static final Map<String, Set<String>> EXPECTED_JDK_REQUIRES = Map.of(
             "root", Set.of(),
@@ -124,7 +123,7 @@ class ApplicationArchitectureContractTests {
             "integrations-cbr", Set.of("java.net.http", "java.xml"),
             "persistence-memory", Set.of());
     private static final Map<String, Set<String>> EXPECTED_EXTERNAL_REQUIRES = Map.of(
-            "root", Set.of("static lombok", "org.slf4j"),
+            "root", Set.of("org.slf4j"),
             "core", Set.of(),
             "application", Set.of(),
             "integrations", Set.of(),
@@ -183,8 +182,8 @@ class ApplicationArchitectureContractTests {
                 "negative fixture: application cannot import persistence implementation");
         assertFalse(isImportAllowed("application", "com.example.external.Client"),
                 "negative fixture: application cannot import non-JDK/non-core dependencies");
-        assertTrue(isImportAllowed("root", "lombok.extern.slf4j.Slf4j"),
-                "root may import its explicitly allowed Lombok annotation");
+        assertFalse(isImportAllowed("root", "lombok.extern.slf4j.Slf4j"),
+                "negative fixture: root cannot import Lombok");
         assertTrue(isImportAllowed("root", "org.slf4j.Logger"),
                 "root may import its explicitly allowed SLF4J API");
         assertFalse(isImportAllowed("application", "org.slf4j.Logger"),
@@ -259,6 +258,8 @@ class ApplicationArchitectureContractTests {
             throw new IllegalStateException("Gradle build file does not exist for " + module + ": " + buildFile);
         }
         String contents = Files.readString(buildFile);
+        assertFalse(contents.toLowerCase(java.util.Locale.ROOT).contains("lombok"),
+                module + " Gradle build must not declare Lombok in any configuration");
         Matcher dependencies = PROJECT_DEPENDENCY.matcher(contents);
         Set<String> actual = new java.util.HashSet<>();
         while (dependencies.find()) {
@@ -277,7 +278,7 @@ class ApplicationArchitectureContractTests {
             }
         }
         assertEquals(ALLOWED_EXTERNAL_DEPENDENCIES.get(module), external,
-                module + " uses only the approved root-scoped Lombok/SLF4J configurations");
+                module + " uses only the approved root-scoped SLF4J configurations");
         assertFalse(contents.contains("--add-exports") || contents.contains("--add-opens"),
                 module + " build does not bypass JPMS encapsulation with add-exports/add-opens");
     }
@@ -405,7 +406,7 @@ class ApplicationArchitectureContractTests {
     }
 
     private static boolean isRootExternalPackage(String packageName) {
-        return isWithin(packageName, "lombok.extern.slf4j") || isWithin(packageName, "org.slf4j");
+        return isWithin(packageName, "org.slf4j");
     }
 
     private static boolean isSharedIntegrationPackage(String packageName) {

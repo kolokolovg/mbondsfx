@@ -20,6 +20,7 @@ import ru.onlychill.mbondsfx.core.id.SecurityId;
 import ru.onlychill.mbondsfx.core.ledger.Account;
 import ru.onlychill.mbondsfx.core.ledger.AccountKind;
 import ru.onlychill.mbondsfx.core.ledger.BondOperations;
+import ru.onlychill.mbondsfx.core.ledger.Commissions;
 import ru.onlychill.mbondsfx.core.ledger.Ledger;
 import ru.onlychill.mbondsfx.core.ledger.LedgerState;
 import ru.onlychill.mbondsfx.core.ledger.OperationResult;
@@ -77,8 +78,11 @@ final class LedgerContractTests {
         assertEntries(purchase.postings().getFirst(),
                 entry(PF, AccountKind.SECURITIES, SEC, RUB, "9850"),
                 entry(PF, AccountKind.ACCRUED_INTEREST, SEC, RUB, "152"),
+                entry(PF, AccountKind.CASH, null, RUB, "-10002"));
+        assertEntries(purchase.postings().get(1),
                 entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "50"),
-                entry(PF, AccountKind.CASH, null, RUB, "-10052"));
+                entry(PF, AccountKind.CASH, null, RUB, "-50"));
+        assertSharedPostingIdentity(purchase);
         Position position = purchase.positionAfter().orElseThrow();
         assertEquals(10, position.quantity(), "dirty purchase quantity");
         assertEquals(m("9850"), position.carryingAmount(), "dirty purchase carrying amount");
@@ -93,15 +97,19 @@ final class LedgerContractTests {
         OperationResult coupon = BondOperations.coupon(id("coupon"), DAY1.plusDays(2), position,
                 m("374"), Optional.of(m("48.62")));
         assertEntries(coupon.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, RUB, "325.38"),
-                entry(PF, AccountKind.TAX_EXPENSE, null, RUB, "48.62"),
+                entry(PF, AccountKind.CASH, null, RUB, "374"),
                 entry(PF, AccountKind.ACCRUED_INTEREST, SEC, RUB, "-152"),
                 entry(PF, AccountKind.COUPON_INCOME, null, RUB, "-222"));
+        assertEntries(coupon.postings().get(1),
+                entry(PF, AccountKind.TAX_WITHHELD, null, RUB, "48.62"),
+                entry(PF, AccountKind.CASH, null, RUB, "-48.62"));
         assertEquals(m("0"), coupon.positionAfter().orElseThrow().purchasedAccrued(),
                 "coupon releases the purchased accrued asset");
         ledger = ledger.apply(coupon);
         assertEquals(m("-222"), ledger.balance(account(AccountKind.COUPON_INCOME, null, RUB)),
                 "only net-of-purchased-accrued coupon is income");
+        assertEquals(m("48.62"), ledger.taxWithheldBalances().get(RUB),
+                "withholding is tracked separately from coupon income");
 
         Position afterCoupon = coupon.positionAfter().orElseThrow();
         OperationResult amort = BondOperations.amortization(id("amort"), DAY1.plusDays(3), afterCoupon,
@@ -377,6 +385,338 @@ final class LedgerContractTests {
     }
 
     @Test
+    void withholdingUsesBalancedCurrencyPostingsAndSurvivesRestore() {
+        SecurityId couponSecurity = new SecurityId("SU-COUPON-TAX");
+        SecurityId amortSecurity = new SecurityId("SU-AMORT-TAX");
+        SecurityId saleSecurity = new SecurityId("SU-SALE-TAX");
+        PositionId couponPositionId = new PositionId(PF, couponSecurity);
+        PositionId amortPositionId = new PositionId(PF, amortSecurity);
+        PositionId salePositionId = new PositionId(PF, saleSecurity);
+        Currency usd = USD;
+
+        Ledger ledger = Ledger.open(PF)
+                .apply(BondOperations.opening(id("tax-rub-open"), DAY1, PF, RUB, m("1000")))
+                .apply(BondOperations.opening(id("tax-usd-open"), DAY1.plusDays(1), PF, usd,
+                        new Money(new BigDecimal("1000"), usd)));
+
+        OperationResult couponBuy = BondOperations.buy(id("tax-coupon-buy"), DAY1.plusDays(2),
+                Position.empty(couponPositionId, RUB), 1, m("0"), m("0"), m("100"), m("0"));
+        ledger = ledger.apply(couponBuy);
+        OperationResult coupon = BondOperations.coupon(id("tax-coupon"), DAY1.plusDays(3),
+                couponBuy.positionAfter().orElseThrow(), m("10"), Optional.of(m("10")));
+        assertEquals(2, coupon.postings().size(), "coupon withholding has its own posting");
+        assertEntries(coupon.postings().getFirst(),
+                entry(PF, AccountKind.CASH, null, RUB, "10"),
+                entry(PF, AccountKind.COUPON_INCOME, null, RUB, "-10"));
+        assertEntries(coupon.postings().get(1),
+                entry(PF, AccountKind.TAX_WITHHELD, null, RUB, "10"),
+                entry(PF, AccountKind.CASH, null, RUB, "-10"));
+        assertSharedPostingIdentity(coupon);
+        ledger = ledger.apply(coupon);
+
+        OperationResult amortBuy = BondOperations.buy(id("tax-amort-buy"), DAY1.plusDays(4),
+                Position.empty(amortPositionId, usd), 1, new Money(new BigDecimal("50"), usd),
+                Money.zero(usd), new Money(new BigDecimal("100"), usd), Money.zero(usd));
+        ledger = ledger.apply(amortBuy);
+        OperationResult amortization = BondOperations.amortization(id("tax-amort"), DAY1.plusDays(5),
+                amortBuy.positionAfter().orElseThrow(), new Money(new BigDecimal("40"), usd),
+                new Money(new BigDecimal("40"), usd), Optional.of(new Money(new BigDecimal("40"), usd)));
+        assertEquals(2, amortization.postings().size(), "amortization withholding has its own posting");
+        assertEntries(amortization.postings().getFirst(),
+                entry(PF, AccountKind.CASH, null, usd, "40"),
+                entry(PF, AccountKind.SECURITIES, amortSecurity, usd, "-20"),
+                entry(PF, AccountKind.AMORTIZATION_GAIN, null, usd, "-20"));
+        assertEntries(amortization.postings().get(1),
+                entry(PF, AccountKind.TAX_WITHHELD, null, usd, "40"),
+                entry(PF, AccountKind.CASH, null, usd, "-40"));
+        assertSharedPostingIdentity(amortization);
+        ledger = ledger.apply(amortization);
+
+        OperationResult saleBuy = BondOperations.buy(id("tax-sale-buy"), DAY1.plusDays(6),
+                Position.empty(salePositionId, RUB), 1, m("80"), m("0"), m("100"),
+                new Commissions(m("3"), m("2")));
+        assertEquals(2, saleBuy.postings().size(), "purchase commissions have their own posting");
+        assertEntries(saleBuy.postings().getFirst(),
+                entry(PF, AccountKind.SECURITIES, saleSecurity, RUB, "80"),
+                entry(PF, AccountKind.CASH, null, RUB, "-80"));
+        assertEntries(saleBuy.postings().get(1),
+                entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "5"),
+                entry(PF, AccountKind.CASH, null, RUB, "-5"));
+        assertSharedPostingIdentity(saleBuy);
+        ledger = ledger.apply(saleBuy);
+        OperationResult sale = BondOperations.sell(id("tax-sale"), DAY1.plusDays(7),
+                saleBuy.positionAfter().orElseThrow(), 1, m("100"), m("0"),
+                new Commissions(m("2"), m("3")), Optional.of(m("100")));
+        assertEquals(3, sale.postings().size(), "full redemption has separate commission and withholding postings");
+        assertEntries(sale.postings().getFirst(),
+                entry(PF, AccountKind.CASH, null, RUB, "100"),
+                entry(PF, AccountKind.SECURITIES, saleSecurity, RUB, "-80"),
+                entry(PF, AccountKind.REALIZED_PNL, null, RUB, "-20"));
+        assertEntries(sale.postings().get(1),
+                entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "5"),
+                entry(PF, AccountKind.CASH, null, RUB, "-5"));
+        assertEntries(sale.postings().get(2),
+                entry(PF, AccountKind.TAX_WITHHELD, null, RUB, "100"),
+                entry(PF, AccountKind.CASH, null, RUB, "-100"));
+        assertSharedPostingIdentity(sale);
+        OperationResult legacyCommissionSale = BondOperations.sell(id("legacy-tax-sale"), DAY1.plusDays(7),
+                saleBuy.positionAfter().orElseThrow(), 1, m("100"), m("0"), m("5"), Optional.empty());
+        assertEquals(2, legacyCommissionSale.postings().size(),
+                "legacy single-commission sale overload also creates a separate commission posting");
+        assertEntries(legacyCommissionSale.postings().get(1),
+                entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "5"),
+                entry(PF, AccountKind.CASH, null, RUB, "-5"));
+        assertEquals(Position.empty(salePositionId, RUB), sale.positionAfter().orElseThrow(),
+                "taxable full redemption still retires the position");
+        ledger = ledger.apply(sale);
+
+        assertEquals(m("910"), ledger.cashBalances().get(RUB), "cash contains net RUB receipts only");
+        assertEquals(new Money(new BigDecimal("950"), usd), ledger.cashBalances().get(usd),
+                "cash contains net USD amortization receipt only");
+        assertEquals(m("110"), ledger.taxWithheldBalances().get(RUB), "RUB withholding is isolated");
+        assertEquals(new Money(new BigDecimal("40"), usd), ledger.taxWithheldBalances().get(usd),
+                "USD withholding is isolated");
+        assertEquals(m("1020"), ledger.cashBalances().get(RUB).add(ledger.taxWithheldBalances().get(RUB)),
+                "RUB cash plus actual withholding retains gross receipts less commissions and purchases");
+        assertEquals(m("10"), ledger.balance(account(AccountKind.COMMISSION_EXPENSE, null, RUB)),
+                "broker and other commissions total to the unchanged expense amount");
+        assertEquals(new Money(new BigDecimal("990"), usd),
+                ledger.cashBalances().get(usd).add(ledger.taxWithheldBalances().get(usd)),
+                "USD cash plus actual withholding retains the gross amortization economics");
+        Map<Currency, Money> withheldView = ledger.taxWithheldBalances();
+        assertThrows(UnsupportedOperationException.class, withheldView::clear,
+                "withholding view is immutable");
+
+        Ledger restored = Ledger.restore(ledger.state());
+        assertEquals(ledger.state(), restored.state(), "both postings and balances round-trip through state");
+        assertEquals(ledger.taxWithheldBalances(), restored.taxWithheldBalances(),
+                "restored withholding view matches the original");
+        assertEquals(2, restored.postingsByDate().get(DAY1.plusDays(3)).size(),
+                "restore retains the coupon's base and withholding postings");
+    }
+
+    @Test
+    void absentAndZeroWithholdingDoNotCreateTaxPostings() {
+        Position position = new Position(positionId(), 1, m("100"), m("100"), m("0"));
+        List<OperationResult> results = List.of(
+                BondOperations.coupon(id("no-coupon-tax"), DAY1, position, m("10"), Optional.empty()),
+                BondOperations.coupon(id("zero-coupon-tax"), DAY1, position, m("10"), Optional.of(m("0"))),
+                BondOperations.amortization(id("no-amort-tax"), DAY1, position,
+                        m("10"), m("10"), Optional.empty()),
+                BondOperations.amortization(id("zero-amort-tax"), DAY1, position,
+                        m("10"), m("10"), Optional.of(m("0"))),
+                BondOperations.sell(id("no-sale-tax"), DAY1, position,
+                        1, m("100"), m("0"), m("0"), Optional.empty()),
+                BondOperations.sell(id("zero-sale-tax"), DAY1, position,
+                        1, m("100"), m("0"), m("0"), Optional.of(m("0"))));
+        for (OperationResult result : results) {
+            assertEquals(1, result.postings().size(), "zero or absent withholding keeps only the base posting");
+            assertTrue(result.postings().getFirst().entries().stream()
+                    .noneMatch(entry -> entry.account().kind() == AccountKind.TAX_WITHHELD),
+                    "zero or absent withholding has no withheld-tax entry");
+        }
+    }
+
+    @Test
+    void commissionComponentsAreValidatedAndZeroFeesAreOmitted() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Commissions(m("-0.01"), m("0")), "negative broker commission rejected");
+        assertThrows(IllegalArgumentException.class,
+                () -> new Commissions(m("1"), new Money(new BigDecimal("1"), USD)),
+                "commission components must use one currency");
+
+        Position empty = Position.empty(positionId(), RUB);
+        Commissions usdFees = new Commissions(new Money(new BigDecimal("1"), USD), Money.zero(USD));
+        assertThrows(IllegalArgumentException.class, () -> BondOperations.buy(id("wrong-buy-fee-currency"), DAY1,
+                empty, 1, m("100"), m("0"), m("100"), usdFees),
+                "buy commissions must match the position currency");
+        Position current = new Position(positionId(), 1, m("100"), m("100"), m("0"));
+        assertThrows(IllegalArgumentException.class, () -> BondOperations.sell(id("wrong-sale-fee-currency"), DAY1,
+                current, 1, m("100"), m("0"), usdFees, Optional.empty()),
+                "sale commissions must match the position currency");
+
+        Commissions noFees = new Commissions(m("0"), m("0"));
+        OperationResult freeBuy = BondOperations.buy(id("zero-fees-buy"), DAY1, empty, 1,
+                m("100"), m("0"), m("100"), noFees);
+        OperationResult freeSale = BondOperations.sell(id("zero-fees-sale"), DAY1, current, 1,
+                m("100"), m("0"), noFees, Optional.empty());
+        assertEquals(1, freeBuy.postings().size(), "zero buy fees add no commission posting");
+        assertEquals(1, freeSale.postings().size(), "zero sale fees add no commission posting");
+    }
+
+    @Test
+    void withheldTaxCannotFundStrictCashSpending() {
+        Ledger ledger = Ledger.open(PF);
+        OperationResult freePosition = BondOperations.buy(id("free-position"), DAY1,
+                Position.empty(positionId(), RUB), 1, m("0"), m("0"), m("100"), m("0"));
+        ledger = ledger.apply(freePosition);
+        OperationResult fullWithholding = BondOperations.coupon(id("full-withholding"), DAY1.plusDays(1),
+                freePosition.positionAfter().orElseThrow(), m("10"), Optional.of(m("10")));
+        ledger = ledger.apply(fullWithholding);
+        assertTrue(ledger.cashBalances().isEmpty(), "withholding leaves no spendable cash");
+        assertEquals(m("10"), ledger.taxWithheldBalances().get(RUB), "withheld balance remains recorded");
+        Ledger afterWithheld = ledger;
+        assertThrows(IllegalStateException.class, () -> afterWithheld.apply(
+                BondOperations.withdrawal(id("spend-withheld"), DAY1.plusDays(2), PF, RUB, m("1"))),
+                "strict cash validation cannot spend a withheld-tax balance");
+        assertTrue(ledger.cashBalances().isEmpty(), "failed spending does not mutate ledger cash");
+    }
+
+    @Test
+    void taxCorrectionsAreLinkedCumulativeAndScopedToTheirOriginalOperation() {
+        PositionId firstPositionId = new PositionId(PF, new SecurityId("SU-TAX-CORRECTION-1"));
+        PositionId secondPositionId = new PositionId(PF, new SecurityId("SU-TAX-CORRECTION-2"));
+        Ledger ledger = Ledger.open(PF).apply(BondOperations.opening(id("correction-fund"), DAY1, PF, RUB, m("100")));
+        TaxedOperation first = applyTaxedCoupon(ledger, "correction-origin-1", firstPositionId,
+                DAY1.plusDays(1), m("10"), m("4"));
+        ledger = first.ledger();
+        TaxedOperation second = applyTaxedCoupon(ledger, "correction-origin-2", secondPositionId,
+                DAY1.plusDays(3), m("10"), m("7"));
+        ledger = second.ledger();
+        assertEquals(m("4"), ledger.taxWithheldForOperation(first.operation()), "original tax is queryable by operation");
+        assertEquals(m("7"), ledger.taxWithheldForOperation(second.operation()), "second original tax is isolated");
+
+        OperationResult redemption = BondOperations.sell(id("correction-origin-redemption"), DAY1.plusDays(5),
+                first.position(), 1, m("0"), m("0"), m("0"), Optional.empty());
+        ledger = ledger.apply(redemption);
+        Map<SecurityId, Position> afterRedemption = ledger.positions();
+
+        OperationResult increase = BondOperations.taxCorrection(id("correction-increase"), DAY1.plusDays(6),
+                PF, first.operation(), m("2"));
+        assertEquals(Optional.of(first.operation()), increase.postings().getFirst().adjustsOperation(),
+                "correction posting links to its original taxed operation");
+        assertEntries(increase.postings().getFirst(),
+                entry(PF, AccountKind.TAX_WITHHELD, null, RUB, "2"),
+                entry(PF, AccountKind.CASH, null, RUB, "-2"));
+        Ledger afterIncrease = ledger.apply(increase);
+        assertEquals(m("6"), afterIncrease.taxWithheldForOperation(first.operation()), "positive adjustment increases tax");
+        assertEquals(afterRedemption, afterIncrease.positions(), "correction does not alter sold position history");
+
+        OperationResult decrease = BondOperations.taxCorrection(id("correction-decrease"), DAY1.plusDays(7),
+                PF, first.operation(), m("-1"));
+        Ledger afterDecrease = afterIncrease.apply(decrease);
+        assertEquals(m("5"), afterDecrease.taxWithheldForOperation(first.operation()), "negative adjustment decreases tax");
+        OperationResult fullRefund = BondOperations.taxCorrection(id("correction-full-refund"), DAY1.plusDays(8),
+                PF, first.operation(), m("-5"));
+        Ledger corrected = afterDecrease.apply(fullRefund);
+        assertEquals(Money.zero(RUB), corrected.taxWithheldForOperation(first.operation()),
+                "repeated corrections can fully return original withholding");
+        assertEquals(m("7"), corrected.taxWithheldForOperation(second.operation()),
+                "another operation's withholding remains untouched");
+        assertEquals(m("7"), corrected.taxWithheldBalances().get(RUB),
+                "portfolio tax balance is the sum of independently corrected origins");
+        assertEquals(afterRedemption, corrected.positions(), "tax corrections never reopen or change positions");
+
+        Ledger afterFullRefund = corrected;
+        assertThrows(IllegalStateException.class, () -> afterFullRefund.apply(
+                BondOperations.taxCorrection(id("over-refund"), DAY1.plusDays(9),
+                        PF, first.operation(), m("-0.01"))),
+                "refund cannot exceed the selected origin even when another tax balance remains");
+        assertThrows(IllegalArgumentException.class,
+                () -> corrected.taxWithheldForOperation(id("unknown-tax-origin")),
+                "query rejects an operation without original withholding");
+        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+                id("correction-unknown-origin"), DAY1.plusDays(9), PF, id("not-in-ledger"), m("1"))),
+                "correction rejects a nonexistent original operation");
+        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+                id("correction-untaxed-origin"), DAY1.plusDays(9), PF, id("correction-fund"), m("1"))),
+                "correction requires an actual nonzero original withholding posting");
+        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+                id("correction-chain"), DAY1.plusDays(9), PF, increase.operation(), m("1"))),
+                "correction cannot be linked to another correction");
+        assertThrows(IllegalStateException.class, () -> corrected.apply(increase),
+                "correction operation IDs remain unique");
+        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+                id("backdated-correction"), DAY1.plusDays(7), PF, first.operation(), m("1"))),
+                "corrections cannot be backdated");
+        assertThrows(IllegalArgumentException.class, () -> BondOperations.taxCorrection(
+                id("self-correction"), DAY1.plusDays(9), PF, id("self-correction"), m("1")),
+                "correction cannot reference itself");
+        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+                id("wrong-currency-correction"), DAY1.plusDays(9), PF, first.operation(),
+                new Money(new BigDecimal("1"), USD))),
+                "correction currency must match the original withholding currency");
+
+        Ledger restored = Ledger.restore(corrected.state());
+        assertEquals(corrected.state(), restored.state(), "correction links and postings survive state restoration");
+        assertEquals(Money.zero(RUB), restored.taxWithheldForOperation(first.operation()),
+                "restored query includes all linked adjustments");
+        OperationResult continuation = BondOperations.taxCorrection(id("restored-correction"), DAY1.plusDays(9),
+                PF, first.operation(), m("1"));
+        assertEquals(corrected.apply(continuation).state(), restored.apply(continuation).state(),
+                "restored ledger continues with the same linked correction");
+    }
+
+    @Test
+    void taxCorrectionRespectsStrictCashAvailability() {
+        PositionId freePositionId = new PositionId(PF, new SecurityId("SU-TAX-CORRECTION-CASH"));
+        Ledger ledger = Ledger.open(PF);
+        TaxedOperation fullTax = applyTaxedCoupon(ledger, "cash-correction-origin", freePositionId,
+                DAY1, m("10"), m("10"));
+        ledger = fullTax.ledger();
+        assertTrue(ledger.cashBalances().isEmpty(), "gross coupon fully withheld leaves no cash");
+        OperationResult extraTax = BondOperations.taxCorrection(id("cash-correction-extra"), DAY1.plusDays(2),
+                PF, fullTax.operation(), m("1"));
+        Ledger beforeRejectedCorrection = ledger;
+        assertThrows(IllegalStateException.class, () -> beforeRejectedCorrection.apply(extraTax),
+                "positive correction cannot make strict cash negative");
+        assertEquals(m("10"), ledger.taxWithheldForOperation(fullTax.operation()),
+                "failed correction is atomic");
+
+        OperationResult refund = BondOperations.taxCorrection(id("cash-correction-refund"), DAY1.plusDays(2),
+                PF, fullTax.operation(), m("-5"));
+        ledger = ledger.apply(refund);
+        assertEquals(m("5"), ledger.cashBalances().get(RUB), "refund returns cash to the portfolio");
+        assertEquals(m("5"), ledger.taxWithheldForOperation(fullTax.operation()), "refund reduces actual tax balance");
+        Ledger afterRefund = ledger;
+        assertThrows(IllegalStateException.class, () -> afterRefund.apply(refund),
+                "applied refund cannot be duplicated");
+    }
+
+    @Test
+    void restoreRejectsMalformedTaxCorrectionLinksAndNegativeTax() {
+        PositionId positionId = new PositionId(PF, new SecurityId("SU-MALFORMED-TAX-CORRECTION"));
+        TaxedOperation taxed = applyTaxedCoupon(Ledger.open(PF, true), "malformed-tax-origin", positionId,
+                DAY1, m("10"), m("4"));
+        LedgerState originalState = taxed.ledger().state();
+        LocalDate correctionDate = DAY1.plusDays(2);
+
+        Posting missingOrigin = taxTransferPosting(id("malformed-missing-origin"), correctionDate,
+                id("absent-origin"), m("1"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ledger.restore(appendPosting(originalState, missingOrigin)),
+                "restore rejects correction links to missing origins");
+
+        Posting wrongCurrency = taxTransferPosting(id("malformed-wrong-currency"), correctionDate,
+                taxed.operation(), new Money(new BigDecimal("1"), USD));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ledger.restore(appendPosting(originalState, wrongCurrency)),
+                "restore rejects correction currency mismatch");
+
+        Posting excessiveRefund = taxTransferPosting(id("malformed-excessive-refund"), correctionDate,
+                taxed.operation(), m("-5"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ledger.restore(appendPosting(originalState, excessiveRefund)),
+                "restore rejects negative cumulative withholding");
+
+        Posting firstCorrection = taxTransferPosting(id("malformed-first-correction"), correctionDate,
+                taxed.operation(), m("1"));
+        LedgerState firstCorrectedState = appendPosting(originalState, firstCorrection);
+        Posting chainedCorrection = taxTransferPosting(id("malformed-chained-correction"),
+                correctionDate.plusDays(1), firstCorrection.operation(), m("1"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ledger.restore(appendPosting(firstCorrectedState, chainedCorrection)),
+                "restore rejects links chained through another correction");
+
+        Posting unlinkedNegativeTax = new Posting(id("malformed-unlinked-negative-tax"), correctionDate, List.of(
+                new Posting.Entry(account(AccountKind.TAX_WITHHELD, null, RUB), m("-1")),
+                new Posting.Entry(account(AccountKind.CASH, null, RUB), m("1"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ledger.restore(appendPosting(originalState, unlinkedNegativeTax)),
+                "restore rejects negative tax entries without a correction link");
+    }
+
+    @Test
     void emptyAndRichLedgerStateRoundTripAndContinuation() {
         Ledger empty = Ledger.open(PF, true);
         assertEquals(empty.state(), Ledger.restore(empty.state()).state(), "empty ledger state round-trips");
@@ -384,8 +724,12 @@ final class LedgerContractTests {
         LedgerState state = ledger.state();
         Ledger restored = Ledger.restore(state);
         assertEquals(state, restored.state(), "rich state round-trips balances, positions, policy, history, and IDs");
+        assertEquals(2, state.postingsByDate().get(DAY1.plusDays(2)).size(),
+                "coupon base and withholding postings share an operation without confusing restore validation");
         assertEquals(ledger.positions(), restored.positions(), "restored positions equal original positions");
         assertEquals(ledger.balances(), restored.balances(), "restored balances equal original balances");
+        assertEquals(m("0.50"), restored.taxWithheldBalances().get(RUB),
+                "restored ledger retains actual withholding separately");
 
         OperationResult next = BondOperations.deposit(id("state-next"), DAY1.plusDays(3), PF, RUB, m("7"));
         assertEquals(restored.apply(next).state(), ledger.apply(next).state(),
@@ -540,6 +884,49 @@ final class LedgerContractTests {
         return ledger.apply(coupon);
     }
 
+    private static TaxedOperation applyTaxedCoupon(Ledger ledger, String operationName, PositionId positionId,
+                                                   LocalDate buyDate, Money gross, Money tax) {
+        Currency currency = gross.currency();
+        OperationResult purchase = BondOperations.buy(id(operationName + "-buy"), buyDate,
+                Position.empty(positionId, currency), 1, Money.zero(currency), Money.zero(currency),
+                new Money(new BigDecimal("100"), currency), Money.zero(currency));
+        ledger = ledger.apply(purchase);
+        OperationId couponId = id(operationName);
+        OperationResult coupon = BondOperations.coupon(couponId, buyDate.plusDays(1),
+                purchase.positionAfter().orElseThrow(), gross, Optional.of(tax));
+        ledger = ledger.apply(coupon);
+        return new TaxedOperation(ledger, couponId, coupon.positionAfter().orElseThrow());
+    }
+
+    private static Posting taxTransferPosting(OperationId operation, LocalDate date,
+                                              OperationId originalOperation, Money adjustment) {
+        return new Posting(operation, date, List.of(
+                new Posting.Entry(account(AccountKind.TAX_WITHHELD, null, adjustment.currency()), adjustment),
+                new Posting.Entry(account(AccountKind.CASH, null, adjustment.currency()), adjustment.negate())),
+                Optional.of(originalOperation));
+    }
+
+    private static LedgerState appendPosting(LedgerState source, Posting posting) {
+        Map<Account, Money> balances = new LinkedHashMap<>(source.balances());
+        for (Posting.Entry entry : posting.entries()) {
+            Account account = entry.account();
+            Money updated = balances.getOrDefault(account, Money.zero(account.currency())).add(entry.amount());
+            if (updated.isZero()) {
+                balances.remove(account);
+            } else {
+                balances.put(account, updated);
+            }
+        }
+        NavigableMap<LocalDate, List<Posting>> history = new TreeMap<>(source.postingsByDate());
+        List<Posting> datedPostings = new java.util.ArrayList<>(history.getOrDefault(posting.date(), List.of()));
+        datedPostings.add(posting);
+        history.put(posting.date(), datedPostings);
+        Set<OperationId> operationIds = new HashSet<>(source.operationIds());
+        operationIds.add(posting.operation());
+        return new LedgerState(source.portfolio(), source.allowNegativeCash(), balances, source.positions(),
+                history, operationIds);
+    }
+
     private static LedgerState withState(LedgerState source, boolean allowNegativeCash,
                                          Map<Account, Money> balances, Map<SecurityId, Position> positions,
                                          NavigableMap<LocalDate, List<Posting>> history,
@@ -585,6 +972,12 @@ final class LedgerContractTests {
         assertTrue(totals.values().stream().allMatch(Money::isZero), "posting balances by currency");
     }
 
+    private static void assertSharedPostingIdentity(OperationResult result) {
+        assertTrue(result.postings().stream().allMatch(posting -> posting.operation().equals(result.operation())
+                && posting.date().equals(result.date())), "split postings share operation identity and date");
+        result.postings().forEach(LedgerContractTests::assertBalanced);
+    }
+
     private static void assertPositionNonnegative(Position position) {
         assertTrue(position.quantity() >= 0 && !position.carryingAmount().isNegative()
                         && !position.faceAmount().isNegative() && !position.purchasedAccrued().isNegative(),
@@ -596,5 +989,6 @@ final class LedgerContractTests {
     private static Money m(String value) { return new Money(new BigDecimal(value), RUB); }
 
     private record ExpectedEntry(Account account, Money amount) { }
+    private record TaxedOperation(Ledger ledger, OperationId operation, Position position) { }
 
 }

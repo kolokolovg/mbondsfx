@@ -15,6 +15,27 @@ Gradle `test` task.
 - `LedgerRepository.commit` — атомарный CAS snapshot+journal contract; сервис строит переход только
   через `Ledger.apply`, передаёт явные portfolio/policy/operation и никогда не повторяет конфликт
   автоматически.
+- Инвестиционные счета и их `InvestmentAccountRepository`/`InvestmentAccountRepositoryFactory` —
+  отдельные от `core.ledger.AccountKind` application-контракты. Отсутствие записи означает unknown;
+  не выводите BROKERAGE как значение по умолчанию. `CouponReceiptService` принимает только три
+  известные суммы фактического получения и записывает операцию через `BondOperations.coupon` и
+  `LedgerApplicationService`; купонное расписание не является проводкой.
+- `TaxCorrectionService.correct` принимает явно заданный скорректированный total удержания для
+  исходной операции, уже содержащей налоговую проводку. Сервис читает один snapshot, вычисляет только
+  delta от накопленного удержания и сохраняет append-only correction через `Ledger.apply` и CAS
+  `LedgerRepository.commit`, без повторов. Не вычисляйте налог, не меняйте исходный journal/receipt,
+  позицию или доход; сохраняйте проверки валюты, cash policy, no-op и дубликата.
+- `InvestmentAccount.newIis3WithMinimumTermForOpeningDate` — отдельная factory для нового счета с
+  календарным минимумом по подтвержденной шкале НК 219.2п4; custom `Iis3Terms` остаются только
+  структурными данными и не проходят правовую валидацию. Не переносите этот минимум на существующие
+  записи и не выводите налоговую льготу из срока.
+- `EarlyClosureAssessment` — только partial structural assessment: даты и явно известные компоненты.
+  Не выводите начало пеней из открытия счета или дат вычетов; неизвестные компоненты остаются unknown,
+  а total появляется только при наличии всех трех. Налоговые правила требуют подтвержденных источников.
+- `PenaltyEstimateService` вычисляет только сценарий по caller-supplied RUB недоимке после adjustments,
+  полузакрытым интервалам и десятичной key rate: 1/300 за календарный день, без compounding и с одной
+  финальным HALF_UP-округлением. Не ищите ставку, дату начала или юридическую недоимку; список интервалов
+  охватывает только указанные даты, gaps не заполняются, отсутствие input остается unknown.
 - Новые storage/provider adapters принадлежат отдельным реализациям, не этому модулю. Для нового
   Gradle-модуля при его создании нужны локальные правила, наследующие корневые.
 

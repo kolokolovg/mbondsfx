@@ -23,7 +23,8 @@ provider SPI доступны потребителям через контрак
 и raw `integrations.marketdata(.model)` контракты принадлежат `:integrations-moex`; CBR adapter —
 `:integrations-cbr`. Shared `:integrations` оставляет generic SPI, fixing API, transport/XML и fixing
 bridge. Root composition compile dependencies — `:core`, `:application`, `:integrations`, а
-runtime providers/memory выбираются root через три typed `ServiceLoader` catalogs. JPMS descriptors
+runtime providers/memory выбираются root через четыре typed `ServiceLoader` catalogs (включая
+application SPI реестра инвестиционных счетов). JPMS descriptors
 теперь настроены: shared module transitively requires application, unconditionally
 exports only `integrations.provider`, and qualified-exports transport/XML/index/adapter only to MOEX
 and CBR provider modules. Provider bootstrap lives in the root composition module. Module-path

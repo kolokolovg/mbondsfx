@@ -7,6 +7,7 @@ import ru.onlychill.mbondsfx.integrations.provider.BondReferenceDataSourceProvid
 import ru.onlychill.mbondsfx.integrations.provider.ProviderContext;
 import ru.onlychill.mbondsfx.integrations.transport.HttpTransport;
 import ru.onlychill.mbondsfx.integrations.transport.Transport;
+import ru.onlychill.mbondsfx.integrations.xml.SecureXml;
 
 /** Service-provider factory for MOEX bond reference data. No network work occurs during construction. */
 public final class MoexProviderFactory implements BondReferenceDataSourceProvider {
@@ -32,7 +33,10 @@ public final class MoexProviderFactory implements BondReferenceDataSourceProvide
         MoexProviderSettings settings = MoexProviderSettings.from(context);
         Transport transport = testTransport != null ? testTransport : new HttpTransport(
                 HttpClient.newBuilder().connectTimeout(settings.connectTimeout()).build(),
-                settings.requestTimeout());
-        return new MoexBondReferenceDataSource(new MoexBondAdapter(transport, settings.endpoint()));
+                settings.requestTimeout(), settings.maxResponseBytes());
+        SecureXml.Limits xmlLimits = new SecureXml.Limits(settings.maxXmlDepth(),
+                settings.maxXmlAttributes(), settings.maxXmlAttributeLength(), settings.maxXmlTextLength());
+        return new MoexBondReferenceDataSource(new MoexBondAdapter(transport, settings.endpoint(),
+                settings.maxResponseBytes(), xmlLimits, settings.maxDescriptionRows(), settings.maxPageRows()));
     }
 }

@@ -67,6 +67,7 @@ public final class Ledger {
         if (lastDate != null && result.date().isBefore(lastDate)) {
             throw new IllegalStateException("Backdated operation " + result.date() + " before " + lastDate);
         }
+        validateTaxCorrection(result);
 
         Position before = result.positionBefore().orElse(null);
         Position after = result.positionAfter().orElse(null);
@@ -163,6 +164,58 @@ public final class Ledger {
         return Collections.unmodifiableMap(cash);
     }
 
+    /** Returns immutable cumulative actual withholding balances, separated by currency. */
+    public Map<Currency, Money> taxWithheldBalances() {
+        Map<Currency, Money> withheld = new LinkedHashMap<>();
+        for (Map.Entry<Account, Money> entry : balances.entrySet()) {
+            if (entry.getKey().kind() == AccountKind.TAX_WITHHELD) {
+                withheld.merge(entry.getKey().currency(), entry.getValue(), Money::add);
+            }
+        }
+        return Collections.unmodifiableMap(withheld);
+    }
+
+    /** Returns actual withholding for an original taxable operation plus its linked corrections. */
+    public Money taxWithheldForOperation(OperationId originalOperation) {
+        Objects.requireNonNull(originalOperation, "originalOperation");
+        Posting original = null;
+        boolean isCorrection = false;
+        for (List<Posting> datedPostings : postingsByDate.values()) {
+            for (Posting posting : datedPostings) {
+                if (posting.operation().equals(originalOperation)) {
+                    if (posting.adjustsOperation().isPresent()) {
+                        isCorrection = true;
+                    } else if (containsWithheldTax(posting)) {
+                        if (original != null) {
+                            throw new IllegalArgumentException("Operation has multiple original withholding postings");
+                        }
+                        original = posting;
+                    }
+                }
+            }
+        }
+        if (isCorrection) {
+            throw new IllegalArgumentException("Tax correction cannot be queried as an original operation");
+        }
+        if (original == null) {
+            throw new IllegalArgumentException("Operation has no original nonzero withholding: " + originalOperation);
+        }
+
+        Money total = validateWithholdingOriginPosting(original, portfolio);
+        for (List<Posting> datedPostings : postingsByDate.values()) {
+            for (Posting posting : datedPostings) {
+                if (posting.adjustsOperation().filter(originalOperation::equals).isPresent()) {
+                    Money adjustment = validateTaxCorrectionPosting(posting, portfolio);
+                    if (!total.currency().equals(adjustment.currency())) {
+                        throw new IllegalArgumentException("Tax correction currency differs from original withholding");
+                    }
+                    total = total.add(adjustment);
+                }
+            }
+        }
+        return total;
+    }
+
     public Optional<Position> position(SecurityId security) {
         Objects.requireNonNull(security, "security");
         return Optional.ofNullable(positions.get(security));
@@ -255,6 +308,7 @@ public final class Ledger {
         if (!operationDates.keySet().equals(state.operationIds())) {
             throw invalidState("Operation IDs do not match posting history");
         }
+        validateTaxCorrectionHistory(state);
         if (!replayedBalances.equals(state.balances())) {
             throw invalidState("Balances do not equal the retained posting history");
         }
@@ -267,6 +321,165 @@ public final class Ledger {
 
     private static IllegalArgumentException invalidState(String message) {
         return new IllegalArgumentException("Invalid ledger state: " + message);
+    }
+
+    private void validateTaxCorrection(OperationResult result) {
+        if (result.kind() != OperationResult.OperationKind.TAX_CORRECTION) {
+            return;
+        }
+        Posting correction = result.postings().getFirst();
+        OperationId originalOperation = correction.adjustsOperation().orElseThrow(
+                () -> new IllegalStateException("Tax correction is missing its original operation link"));
+        if (!operationIds.contains(originalOperation)) {
+            throw new IllegalStateException("Tax correction references an unknown operation: " + originalOperation);
+        }
+        LocalDate originalDate = operationDate(originalOperation);
+        if (originalDate == null || result.date().isBefore(originalDate)) {
+            throw new IllegalStateException("Tax correction precedes or lacks its original operation");
+        }
+
+        Money adjustment;
+        Money current;
+        try {
+            adjustment = validateTaxCorrectionPosting(correction, portfolio);
+            current = taxWithheldForOperation(originalOperation);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalStateException("Invalid tax correction: " + invalid.getMessage(), invalid);
+        }
+        if (!current.currency().equals(adjustment.currency())) {
+            throw new IllegalStateException("Tax correction currency differs from original withholding");
+        }
+        if (current.add(adjustment).isNegative()) {
+            throw new IllegalStateException("Tax correction cannot reduce cumulative withholding below zero");
+        }
+    }
+
+    private LocalDate operationDate(OperationId operation) {
+        for (Map.Entry<LocalDate, List<Posting>> dated : postingsByDate.entrySet()) {
+            if (dated.getValue().stream().anyMatch(posting -> posting.operation().equals(operation))) {
+                return dated.getKey();
+            }
+        }
+        return null;
+    }
+
+    private static void validateTaxCorrectionHistory(LedgerState state) {
+        Map<OperationId, List<Posting>> postingsByOperation = new HashMap<>();
+        Map<OperationId, Posting> originalTaxPostings = new HashMap<>();
+        Set<OperationId> correctionOperations = new HashSet<>();
+        for (List<Posting> datedPostings : state.postingsByDate().values()) {
+            for (Posting posting : datedPostings) {
+                postingsByOperation.computeIfAbsent(posting.operation(), ignored -> new ArrayList<>()).add(posting);
+                if (posting.adjustsOperation().isPresent()) {
+                    correctionOperations.add(posting.operation());
+                    try {
+                        validateTaxCorrectionPosting(posting, state.portfolio());
+                    } catch (IllegalArgumentException invalid) {
+                        throw invalidState("Malformed tax correction posting: " + invalid.getMessage());
+                    }
+                } else if (containsWithheldTax(posting)) {
+                    if (originalTaxPostings.putIfAbsent(posting.operation(), posting) != null) {
+                        throw invalidState("Operation has multiple original withholding postings");
+                    }
+                    try {
+                        validateWithholdingOriginPosting(posting, state.portfolio());
+                    } catch (IllegalArgumentException invalid) {
+                        throw invalidState("Malformed original withholding posting: " + invalid.getMessage());
+                    }
+                }
+            }
+        }
+
+        for (OperationId correctionOperation : correctionOperations) {
+            if (postingsByOperation.get(correctionOperation).size() != 1
+                    || originalTaxPostings.containsKey(correctionOperation)) {
+                throw invalidState("Tax correction operation must contain only its linked correction posting");
+            }
+        }
+
+        Map<OperationId, Money> cumulativeWithholding = new HashMap<>();
+        for (List<Posting> datedPostings : state.postingsByDate().values()) {
+            for (Posting posting : datedPostings) {
+                if (posting.adjustsOperation().isPresent()) {
+                    OperationId originalOperation = posting.adjustsOperation().orElseThrow();
+                    if (correctionOperations.contains(originalOperation)) {
+                        throw invalidState("Tax correction cannot link to another tax correction");
+                    }
+                    Money originalTax = cumulativeWithholding.get(originalOperation);
+                    if (originalTax == null) {
+                        throw invalidState("Tax correction references a missing or later original withholding posting");
+                    }
+                    Money adjustment = validateTaxCorrectionPosting(posting, state.portfolio());
+                    if (!originalTax.currency().equals(adjustment.currency())) {
+                        throw invalidState("Tax correction currency differs from original withholding");
+                    }
+                    Money corrected = originalTax.add(adjustment);
+                    if (corrected.isNegative()) {
+                        throw invalidState("Cumulative withholding for an operation cannot be negative");
+                    }
+                    cumulativeWithholding.put(originalOperation, corrected);
+                } else if (originalTaxPostings.get(posting.operation()) == posting) {
+                    // Validate only the identified withholding posting, not its operation's base postings.
+                    Money originalTax = validateWithholdingOriginPosting(posting, state.portfolio());
+                    cumulativeWithholding.put(posting.operation(), originalTax);
+                }
+            }
+        }
+    }
+
+    private static boolean containsWithheldTax(Posting posting) {
+        return posting.entries().stream().anyMatch(entry -> entry.account().kind() == AccountKind.TAX_WITHHELD);
+    }
+
+    private static Money validateWithholdingOriginPosting(Posting posting, PortfolioId portfolio) {
+        if (posting.adjustsOperation().isPresent()) {
+            throw new IllegalArgumentException("Original withholding posting must not link to another operation");
+        }
+        Money amount = validateTaxTransferPosting(posting, portfolio);
+        if (!amount.isPositive()) {
+            throw new IllegalArgumentException("Original withholding amount must be positive");
+        }
+        return amount;
+    }
+
+    private static Money validateTaxCorrectionPosting(Posting posting, PortfolioId portfolio) {
+        OperationId original = posting.adjustsOperation().orElseThrow(
+                () -> new IllegalArgumentException("Correction posting has no adjusted operation"));
+        if (posting.operation().equals(original)) {
+            throw new IllegalArgumentException("Tax correction cannot adjust itself");
+        }
+        Money amount = validateTaxTransferPosting(posting, portfolio);
+        if (amount.isZero()) {
+            throw new IllegalArgumentException("Tax correction amount must not be zero");
+        }
+        return amount;
+    }
+
+    private static Money validateTaxTransferPosting(Posting posting, PortfolioId portfolio) {
+        if (posting.entries().size() != 2) {
+            throw new IllegalArgumentException("Tax transfer posting must contain exactly two entries");
+        }
+        Posting.Entry taxEntry = null;
+        Posting.Entry cashEntry = null;
+        for (Posting.Entry entry : posting.entries()) {
+            Account account = entry.account();
+            if (!portfolio.equals(account.portfolio())) {
+                throw new IllegalArgumentException("Tax transfer belongs to a different portfolio");
+            }
+            if (account.kind() == AccountKind.TAX_WITHHELD && taxEntry == null) {
+                taxEntry = entry;
+            } else if (account.kind() == AccountKind.CASH && cashEntry == null) {
+                cashEntry = entry;
+            } else {
+                throw new IllegalArgumentException("Tax transfer must contain one withheld-tax and one cash entry");
+            }
+        }
+        if (taxEntry == null || cashEntry == null
+                || !taxEntry.amount().currency().equals(cashEntry.amount().currency())
+                || !taxEntry.amount().negate().equals(cashEntry.amount())) {
+            throw new IllegalArgumentException("Tax transfer entries must be equal and opposite in one currency");
+        }
+        return taxEntry.amount();
     }
 
     private static void validatePositionBalances(Map<Account, Money> balances,

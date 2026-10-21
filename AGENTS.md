@@ -2,7 +2,7 @@
 
 ## Проект и границы модулей
 
-Это Java 21 / Gradle проект с явной моделью облигаций и денежных потоков, доменными расчетами,
+Это Java 25 / Gradle проект с явной моделью облигаций и денежных потоков, доменными расчетами,
 учетом портфеля и интеграциями рыночных данных. Перед изменениями прочитайте эти правила и
 инструкции затрагиваемого модуля (`core/AGENTS.md`, `application/AGENTS.md`, `integrations/AGENTS.md`,
 `integrations-moex/AGENTS.md`, `integrations-cbr/AGENTS.md` или
@@ -15,23 +15,23 @@
 - `:integrations-moex` — MOEX-адаптер и его raw-контракт (`MarketDataPort`, `BondMarketData`);
   Gradle `implementation` зависит от `:integrations`.
 - `:integrations-cbr` — CBR-адаптер; Gradle `implementation` зависит от `:integrations`.
-- `:persistence-memory` — in-memory реализация application `LedgerRepository`; Gradle
+- `:persistence-memory` — in-memory реализации application `LedgerRepository` и
+  `InvestmentAccountRepository`; Gradle
   `implementation` зависит от `:application`.
 - Root compile-зависимости — `:core`, `:application`, `:integrations`; `runtimeOnly` зависимости —
-  `:integrations-moex`, `:integrations-cbr`, `:persistence-memory`. Только root использует Lombok
-  (compile-only и annotation processing для main/test) и SLF4J (`slf4j-api` на compile/runtime,
-  `slf4j-simple` только на runtime); остальные модули от них не зависят.
+  `:integrations-moex`, `:integrations-cbr`, `:persistence-memory`. Только root использует SLF4J
+  (`slf4j-api` на compile/runtime, `slf4j-simple` только на runtime); остальные модули от него не зависят.
 
 Направление зависимостей: `:integrations` → `:application` → `:core`; `:integrations-moex` и
 `:integrations-cbr` → `:integrations` (транзитивно `:application`/`:core`);
 `:persistence-memory` → `:application`/`:core`. `:core` не зависит от вышележащих модулей, а root
-собирает единственную composition root. Реальные JPMS descriptors настроены: root статически
-требует Lombok для annotation processing и требует SLF4J API для логирования. Core экспортирует
-шесть доменных пакетов; application транзитивно требует core; shared integrations транзитивно
-требует application, экспортирует provider SPI всем и транспорт/XML/index/generic adapter только
+собирает единственную composition root. Реальные JPMS descriptors настроены: root требует SLF4J API
+для логирования. Core экспортирует шесть доменных пакетов; application транзитивно требует core;
+shared integrations транзитивно требует application, экспортирует provider SPI всем и транспорт/XML/index/generic adapter только
 MOEX/CBR; providers и memory не экспортируют пакеты. Root module `ru.onlychill.mbondsfx` использует
-три typed SPIs и загружает runtime providers через `ServiceLoader`; module-path blackbox validation
-остается acceptance этой фазы. `IndexFixing`, `IndexFixingSource` и `MissingFixingException` в
+четыре typed SPIs и загружает runtime providers через `ServiceLoader`. Root module-path blackbox suite
+доказывает границы произведенного distribution и остается обязательной ongoing-проверкой; classpath
+tests ее не заменяют. `IndexFixing`, `IndexFixingSource` и `MissingFixingException` в
 `integrations.index` описывают внешний fixing API и DTO. Доменный порт — `IndexValueSource` в
 `core.bond.calculation.port`; он принимает `IndexId` и дату и возвращает `BigDecimal`, не раскрывая
 integration-типы. `IndexValueSourceAdapter` в `integrations.adapter` — явный bridge; доменная
@@ -57,9 +57,22 @@ integration-типы. `IndexValueSourceAdapter` в `integrations.adapter` — я
 - Денежные значения и календарные/day-count примитивы — `core.money`; `SecurityId`, `IndexId` и
   остальные типизированные ID — `core.id`.
 - Проводки, позиции и операции учета — `core.ledger`. Не переносите `OperationResult` только
-  из-за названия: у него package-private конструктор, связанный с `BondOperations`.
+  из-за названия: у него package-private конструктор, связанный с `BondOperations`. Денежные
+  остатки `CASH` и удержания `TAX_WITHHELD` ведутся отдельно по портфелю и валюте; `TAX_WITHHELD`
+  не входит в доступный для трат `cashBalances()`; его per-currency read view — `taxWithheldBalances()`.
+  Покупки и продажи учитывают явно переданные
+  брокерскую и прочую комиссию через `Commissions`/`total()` и отдельную проводку
+  `D COMMISSION_EXPENSE / C CASH`; ненулевое удержание также отдельная проводка
+  `D TAX_WITHHELD / C CASH`. Не рассчитывайте налог или тариф автоматически.
+  `TAX_CORRECTION` — append-only операция с `Posting.adjustsOperation()` на исходную tax-операцию;
+  `Ledger.taxWithheldForOperation()` дает ее накопленное удержание, неотрицательное после поправок.
 - Use cases и исходящие порты — `application`: `BondReferenceDataSource` и его sparse read-модель,
   порты repository/journal/factory и их контракты; сервис применения операций учета также здесь.
+  `InvestmentAccount`, `InvestmentAccountRepository`/factory, подтверждение фактического купона и
+  `TaxCorrectionService` также принадлежат application и не меняют `core.ledger.AccountKind`.
+  `CouponReceiptService` принимает только фактические `gross`, `tax` и `net`; `TaxCorrectionService`
+  принимает caller-supplied corrected total и фиксирует delta отдельным CAS-коммитом, не переписывая
+  исходный журнал/receipt и не вычисляя налог.
   Этот модуль зависит от core, но не от интеграций или конкретных адаптеров.
 - `integrations` владеет fixing DTO/API/ошибкой отсутствующего внешнего fixing (`integrations.index`),
   generic transport (`integrations.transport`), typed provider SPI (`integrations.provider`),
@@ -68,8 +81,8 @@ integration-типы. `IndexValueSourceAdapter` в `integrations.adapter` — я
 - `integrations-moex` владеет `integrations.marketdata(.model)` raw-контрактом и
   `integrations.moex.internal.MoexBondAdapter`; `integrations-cbr` владеет
   `integrations.cbr.internal.CbrIndexAdapter`. Эти DTO/адаптеры не являются core domain models.
-- `persistence-memory` реализует application repository port; `:core` и `:application` не зависят
-  от этой реализации.
+- `persistence-memory` реализует application ledger и investment-account repository ports; `:core` и
+  `:application` не зависят от этой реализации.
 
 Внутри `:core` соблюдайте эту карту зависимостей: `bond -> id/money`,
 `bond.calculation` (включая `calculation.port`) `-> bond/id/money`, `ledger -> id/money`; пакеты
@@ -87,10 +100,9 @@ DTO, UI- или DB-модели.
   проверяемые инварианты. Не подменяйте неизвестные значения нулем или предполагаемыми правилами
   выпуска.
 - Не добавляйте внешние production-зависимости и не меняйте финансовое поведение без явного
-  требования. Разрешенные по явному запросу Lombok и SLF4J остаются только в root composition
-  module: Lombok не входит в runtime distribution, SLF4J Simple — его runtime backend. Для
-  test/coverage используются JUnit Jupiter 5.12.2, JUnit Platform 1.12.2 и JaCoCo
-  0.8.13; не переносите тестовые библиотеки или JaCoCo agent в production/runtime classpath.
+  требования. SLF4J остается только в root composition module; `slf4j-simple` — его runtime backend.
+  Для test/coverage используются JUnit Jupiter 5.12.2, JUnit Platform 1.12.2 и JaCoCo
+  0.8.15; не переносите тестовые библиотеки или JaCoCo agent в production/runtime classpath.
 - Если архитектурную границу намеренно меняют, обновите соответствующие инструкции и документы
   вместе с кодом; не оставляйте их противоречащими новой границе.
 
@@ -99,7 +111,7 @@ DTO, UI- или DB-модели.
 - Вне UI не выбирайте тяжёлые фреймворки по умолчанию: не добавляйте DI/ORM/boot/reactive stacks
   или framework для миграций без явного обоснования и одобрения. Исключение для UI не означает
   автоматического разрешения на зависимости.
-- Сначала оценивайте API JDK 21 (`HttpClient`, защищённый XML API, concurrency, JDBC,
+- Сначала оценивайте API JDK 25 (`HttpClient`, защищённый XML API, concurrency, JDBC,
   `ServiceLoader`) или небольшой проектный компонент, если это соразмерно задаче. Поддерживаемая,
   широко используемая лёгкая библиотека с permissive-лицензией допустима, если необходимость
   доказана; Apache Commons — пример, не blanket-разрешение на все артефакты или их лицензии.
@@ -117,8 +129,8 @@ DTO, UI- или DB-модели.
 
 ## Сборка и проверки
 
-Требуется JDK 21. Установите `JAVA_HOME` на JDK 21; если переменная не задана, убедитесь, что
-Gradle обнаруживает установленный JDK 21. Не фиксируйте локальный путь к JDK в документации.
+Требуется JDK 25. Установите `JAVA_HOME` на JDK 25; если переменная не задана, убедитесь, что
+Gradle обнаруживает установленный JDK 25. Не фиксируйте локальный путь к JDK в документации.
 
 ```bash
 ./gradlew clean build
@@ -142,7 +154,7 @@ java/javac subprocesses, запускающие произведенный distr
 `test`/`check` создают per-project JaCoCo HTML/XML reports в
 `<project>/build/reports/jacoco/test/`; `jacocoAggregateReport` запускает все семь `test` tasks и
 создает root HTML/XML отчет в `build/reports/jacoco/jacocoAggregateReport/`. JaCoCo использует
-tool version 0.8.13; root java/javac module-path subprocesses не instrumented и не входят в
+tool version 0.8.15; root java/javac module-path subprocesses не instrumented и не входят в
 coverage данных отчета.
 
 ## Работа в репозитории

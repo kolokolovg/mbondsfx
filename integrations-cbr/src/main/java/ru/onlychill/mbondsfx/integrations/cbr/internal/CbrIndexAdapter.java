@@ -4,11 +4,14 @@ import java.math.BigDecimal;
 import java.net.URI;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 import ru.onlychill.mbondsfx.core.id.IndexId;
 import ru.onlychill.mbondsfx.integrations.index.IndexFixing;
 import ru.onlychill.mbondsfx.integrations.index.IndexFixingSource;
@@ -24,9 +27,18 @@ public final class CbrIndexAdapter implements IndexFixingSource {
     public static final IndexId RUONIA = new IndexId("RUONIA");
     public static final URI DEFAULT_ENDPOINT = URI.create(
             "https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx");
+    private static final SecureXml.Limits DEFAULT_XML_LIMITS = new SecureXml.Limits(
+            CbrProviderFactory.DEFAULT_MAX_XML_DEPTH,
+            CbrProviderFactory.DEFAULT_MAX_XML_ATTRIBUTES,
+            CbrProviderFactory.DEFAULT_MAX_XML_ATTRIBUTE_LENGTH,
+            CbrProviderFactory.DEFAULT_MAX_XML_TEXT_LENGTH);
 
     private final Transport transport;
     private final URI endpoint;
+    private final long maxResponseBytes;
+    private final SecureXml.Limits xmlLimits;
+    private final SecureXml.Limits soapXmlLimits;
+    private final int maxSeriesRows;
 
     public CbrIndexAdapter(Transport transport) {
         this(transport, DEFAULT_ENDPOINT);
@@ -34,8 +46,32 @@ public final class CbrIndexAdapter implements IndexFixingSource {
 
     /** Custom HTTP(S) endpoint is useful for fixture-backed transports; official default is HTTPS. */
     public CbrIndexAdapter(Transport transport, URI endpoint) {
+        this(transport, endpoint, CbrProviderFactory.DEFAULT_MAX_RESPONSE_BYTES,
+                DEFAULT_XML_LIMITS, CbrProviderFactory.DEFAULT_MAX_SERIES_ROWS);
+    }
+
+    /** Creates an adapter with finite response, XML, and fixing-row budgets. */
+    public CbrIndexAdapter(
+            Transport transport,
+            URI endpoint,
+            long maxResponseBytes,
+            SecureXml.Limits xmlLimits,
+            int maxSeriesRows) {
         this.transport = Objects.requireNonNull(transport, "transport");
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
+        this.xmlLimits = Objects.requireNonNull(xmlLimits, "xmlLimits");
+        if (maxResponseBytes <= 0) {
+            throw new IllegalArgumentException("maxResponseBytes must be positive");
+        }
+        if (maxSeriesRows <= 0) {
+            throw new IllegalArgumentException("maxSeriesRows must be positive");
+        }
+        this.maxResponseBytes = maxResponseBytes;
+        this.maxSeriesRows = maxSeriesRows;
+        int soapTextLimit = maxResponseBytes >= Integer.MAX_VALUE
+                ? Integer.MAX_VALUE : (int) maxResponseBytes;
+        this.soapXmlLimits = new SecureXml.Limits(xmlLimits.maxDepth(), xmlLimits.maxAttributes(),
+                xmlLimits.maxAttributeLength(), soapTextLimit);
         if (!("https".equalsIgnoreCase(endpoint.getScheme()) || "http".equalsIgnoreCase(endpoint.getScheme()))
                 || endpoint.getHost() == null || endpoint.getQuery() != null || endpoint.getFragment() != null) {
             throw new IllegalArgumentException("endpoint must be an HTTP(S) URL without query/fragment");
@@ -84,20 +120,25 @@ public final class CbrIndexAdapter implements IndexFixingSource {
             if (!(transportFailure.getCause() instanceof HttpStatusException statusFailure)) {
                 throw transportFailure;
             }
+            ensureResponseWithinLimit(statusFailure.responseBody());
             SoapFaultException fault = soapFaultIfPresent(statusFailure.responseBody(), method);
             if (fault != null) {
                 throw fault;
             }
             throw transportFailure;
         }
-        Document envelope = SecureXml.parse(response);
-        if (!SecureXml.descendants(envelope.getDocumentElement(), "Fault").isEmpty()) {
-            throw new SoapFaultException("CBR SOAP fault for " + method + ": "
-                    + SecureXml.descendants(envelope.getDocumentElement(), "Fault").getFirst().getTextContent().trim());
+        ensureResponseWithinLimit(response);
+        Document envelope = SecureXml.parse(response, soapXmlLimits);
+        List<Element> faults = SecureXml.descendants(envelope.getDocumentElement(), "Fault", 1);
+        if (!faults.isEmpty()) {
+            SecureXml.validate(envelope.getDocumentElement(), xmlLimits);
+            throw new SoapFaultException("CBR SOAP fault for " + method + ": " + boundedText(faults.getFirst()));
         }
         Element result = findResult(envelope, method + "Result");
         Element data = unwrapResult(result);
-        List<Element> entries = SecureXml.descendants(data, rowName);
+        SecureXml.validate(envelope.getDocumentElement(), xmlLimits);
+        SecureXml.validate(data, xmlLimits);
+        List<Element> entries = SecureXml.descendants(data, rowName, maxSeriesRows);
         List<IndexFixing> resultRows = new ArrayList<>(entries.size());
         for (Element entry : entries) {
             LocalDate date = parseCbrDate(SecureXml.childText(entry, dateField), dateField);
@@ -117,31 +158,32 @@ public final class CbrIndexAdapter implements IndexFixingSource {
     }
 
     private static Element findResult(Document envelope, String resultName) {
-        List<Element> results = SecureXml.descendants(envelope.getDocumentElement(), resultName);
+        List<Element> results = SecureXml.descendants(envelope.getDocumentElement(), resultName, 1);
         if (results.size() != 1) {
             throw new SecureXml.MissingBlockException("Missing or duplicate CBR SOAP result: " + resultName);
         }
         return results.getFirst();
     }
 
-    private static SoapFaultException soapFaultIfPresent(String response, String method) {
+    private SoapFaultException soapFaultIfPresent(String response, String method) {
         if (response.isBlank()) {
             return null;
         }
+        Document document;
         try {
-            Document document = SecureXml.parse(response);
-            List<Element> faults = SecureXml.descendants(document.getDocumentElement(), "Fault");
-            if (faults.isEmpty()) {
-                return null;
-            }
-            return new SoapFaultException("CBR SOAP fault for " + method + ": "
-                    + faults.getFirst().getTextContent().trim());
-        } catch (RuntimeException notXmlOrUnsafe) {
+            document = SecureXml.parse(response, soapXmlLimits);
+        } catch (SecureXml.MalformedXmlException malformedOrOverLimit) {
             return null;
         }
+        List<Element> faults = SecureXml.descendants(document.getDocumentElement(), "Fault", 1);
+        if (faults.isEmpty()) {
+            return null;
+        }
+        SecureXml.validate(document.getDocumentElement(), xmlLimits);
+        return new SoapFaultException("CBR SOAP fault for " + method + ": " + boundedText(faults.getFirst()));
     }
 
-    private static Element unwrapResult(Element result) {
+    private Element unwrapResult(Element result) {
         boolean hasElements = false;
         for (org.w3c.dom.Node child = result.getFirstChild(); child != null; child = child.getNextSibling()) {
             if (child instanceof Element) {
@@ -156,8 +198,69 @@ public final class CbrIndexAdapter implements IndexFixingSource {
         if (nestedXml.isEmpty()) {
             throw new SecureXml.MissingBlockException("Empty nested CBR SOAP result: " + result.getTagName());
         }
-        Document nested = SecureXml.parse(nestedXml);
+        Document nested = SecureXml.parse(nestedXml, xmlLimits);
+        result.setTextContent("");
         return nested.getDocumentElement();
+    }
+
+    private String boundedText(Element element) {
+        StringBuilder text = new StringBuilder(Math.min(xmlLimits.maxTextLength(), 128));
+        Deque<Node> pending = new ArrayDeque<>();
+        pushChildrenInDocumentOrder(element, pending);
+        while (!pending.isEmpty()) {
+            Node node = pending.pop();
+            short type = node.getNodeType();
+            if (type == Node.TEXT_NODE || type == Node.CDATA_SECTION_NODE) {
+                String value = node.getNodeValue();
+                if (value.length() > xmlLimits.maxTextLength() - text.length()) {
+                    throw new IllegalArgumentException("CBR SOAP Fault text exceeds configured XML text limit of "
+                            + xmlLimits.maxTextLength() + " characters");
+                }
+                text.append(value);
+            } else {
+                pushChildrenInDocumentOrder(node, pending);
+            }
+        }
+        return text.toString().trim();
+    }
+
+    private static void pushChildrenInDocumentOrder(Node parent, Deque<Node> pending) {
+        for (Node child = parent.getLastChild(); child != null; child = child.getPreviousSibling()) {
+            pending.push(child);
+        }
+    }
+
+    private void ensureResponseWithinLimit(String response) {
+        Objects.requireNonNull(response, "response");
+        if (utf8LengthExceeds(response, maxResponseBytes)) {
+            throw new IllegalArgumentException("CBR response exceeds configured byte limit of "
+                    + maxResponseBytes + " bytes");
+        }
+    }
+
+    private static boolean utf8LengthExceeds(String value, long limit) {
+        long bytes = 0;
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (character <= 0x7f) {
+                bytes++;
+            } else if (character <= 0x7ff) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(character) && index + 1 < value.length()
+                    && Character.isLowSurrogate(value.charAt(index + 1))) {
+                bytes += 4;
+                index++;
+            } else if (Character.isSurrogate(character)) {
+                // The JDK UTF-8 encoder replaces an unpaired surrogate with one byte.
+                bytes++;
+            } else {
+                bytes += 3;
+            }
+            if (bytes > limit) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static LocalDate parseCbrDate(String value, String field) {

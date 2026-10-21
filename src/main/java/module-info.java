@@ -1,5 +1,4 @@
 module ru.onlychill.mbondsfx {
-    requires static lombok;
     requires org.slf4j;
     requires ru.onlychill.mbondsfx.core;
     requires ru.onlychill.mbondsfx.application;
@@ -8,4 +7,5 @@ module ru.onlychill.mbondsfx {
     uses ru.onlychill.mbondsfx.integrations.provider.BondReferenceDataSourceProvider;
     uses ru.onlychill.mbondsfx.integrations.provider.IndexValueSourceProvider;
     uses ru.onlychill.mbondsfx.application.port.LedgerRepositoryFactory;
+    uses ru.onlychill.mbondsfx.application.port.InvestmentAccountRepositoryFactory;
 }

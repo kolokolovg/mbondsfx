@@ -7,7 +7,7 @@ public enum AccountKind {
     COUPON_INCOME,
     AMORTIZATION_GAIN,
     REALIZED_PNL,
-    TAX_EXPENSE,
+    TAX_WITHHELD,
     COMMISSION_EXPENSE,
     EQUITY;
 

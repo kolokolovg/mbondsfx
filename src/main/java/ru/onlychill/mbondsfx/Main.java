@@ -7,17 +7,21 @@ import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.TreeMap;
 import java.util.function.Function;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import ru.onlychill.mbondsfx.application.port.LedgerRepository;
 import ru.onlychill.mbondsfx.application.port.LedgerRepositoryFactory;
+import ru.onlychill.mbondsfx.application.port.InvestmentAccountRepository;
+import ru.onlychill.mbondsfx.application.port.InvestmentAccountRepositoryFactory;
 import ru.onlychill.mbondsfx.application.port.RepositoryConfig;
 import ru.onlychill.mbondsfx.application.port.BondReferenceDataSource;
 import ru.onlychill.mbondsfx.integrations.provider.BondReferenceDataSourceProvider;
 import ru.onlychill.mbondsfx.integrations.provider.IndexValueSourceProvider;
 import ru.onlychill.mbondsfx.integrations.provider.ProviderContext;
 
-@Slf4j
 public final class Main {
+    private static final Logger log = LoggerFactory.getLogger(Main.class);
+
     private Main() {
     }
 
@@ -35,22 +39,30 @@ public final class Main {
         List<BondReferenceDataSourceProvider> bondServices = services(BondReferenceDataSourceProvider.class);
         List<IndexValueSourceProvider> indexServices = services(IndexValueSourceProvider.class);
         List<LedgerRepositoryFactory> repositoryServices = services(LedgerRepositoryFactory.class);
+        List<InvestmentAccountRepositoryFactory> investmentAccountServices =
+                services(InvestmentAccountRepositoryFactory.class);
         ProviderCatalog<BondReferenceDataSourceProvider> bondCatalog = catalog(
                 "bond", bondServices, BondReferenceDataSourceProvider::providerId);
         ProviderCatalog<IndexValueSourceProvider> indexCatalog = catalog(
                 "index", indexServices, IndexValueSourceProvider::providerId);
         ProviderCatalog<LedgerRepositoryFactory> repositoryCatalog = catalog(
                 "repository", repositoryServices, LedgerRepositoryFactory::providerId);
+        ProviderCatalog<InvestmentAccountRepositoryFactory> investmentAccountCatalog = catalog(
+                "investment-account repository", investmentAccountServices,
+                InvestmentAccountRepositoryFactory::providerId);
         List<String> catalogErrors = new ArrayList<>();
         catalogErrors.addAll(bondCatalog.errors());
         catalogErrors.addAll(indexCatalog.errors());
         catalogErrors.addAll(repositoryCatalog.errors());
+        catalogErrors.addAll(investmentAccountCatalog.errors());
         if (!catalogErrors.isEmpty()) {
             throw new IllegalStateException(String.join("; ", catalogErrors));
         }
         Map<String, BondReferenceDataSourceProvider> bondProviders = bondCatalog.providers();
         Map<String, IndexValueSourceProvider> indexProviders = indexCatalog.providers();
         Map<String, LedgerRepositoryFactory> repositoryProviders = repositoryCatalog.providers();
+        Map<String, InvestmentAccountRepositoryFactory> investmentAccountProviders =
+                investmentAccountCatalog.providers();
 
         String bondId = "none";
         if (options.includesBond()) {
@@ -78,6 +90,14 @@ public final class Main {
         LedgerRepository ledgerRepository = repository.provider().create(RepositoryConfig.empty());
         if (ledgerRepository == null) {
             throw new IllegalStateException("Repository provider '" + repository.id() + "' returned null");
+        }
+        ProviderSelection<InvestmentAccountRepositoryFactory> investmentAccounts = requireProvider(
+                "investment-account repository", repository.id(), investmentAccountProviders);
+        InvestmentAccountRepository investmentAccountRepository =
+                investmentAccounts.provider().createInvestmentAccountRepository(RepositoryConfig.empty());
+        if (investmentAccountRepository == null) {
+            throw new IllegalStateException("Investment-account repository provider '" + investmentAccounts.id()
+                    + "' returned null");
         }
 
         System.out.println("profile=" + options.profile() + " bond=" + bondId + " index=" + indexId

@@ -35,23 +35,58 @@ public final class BondOperations {
                 AccountKind.EQUITY, AccountKind.CASH);
     }
 
+    /** Creates an explicit signed actual-withholding adjustment linked to its original operation. */
+    public static OperationResult taxCorrection(OperationId op, LocalDate date, PortfolioId portfolio,
+                                                OperationId originalOperation, Money signedAdjustment) {
+        Objects.requireNonNull(op, "op");
+        Objects.requireNonNull(date, "date");
+        Objects.requireNonNull(portfolio, "portfolio");
+        Objects.requireNonNull(originalOperation, "originalOperation");
+        Objects.requireNonNull(signedAdjustment, "signedAdjustment");
+        if (op.equals(originalOperation)) {
+            throw new IllegalArgumentException("Tax correction operation must differ from the adjusted operation");
+        }
+        if (signedAdjustment.isZero()) {
+            throw new IllegalArgumentException("Tax correction amount must not be zero");
+        }
+        Currency currency = signedAdjustment.currency();
+        Account withheld = new Account(portfolio, AccountKind.TAX_WITHHELD, Optional.empty(), currency);
+        Account cash = new Account(portfolio, AccountKind.CASH, Optional.empty(), currency);
+        List<Posting.Entry> entries = new ArrayList<>();
+        signed(entries, withheld, signedAdjustment);
+        signed(entries, cash, signedAdjustment.negate());
+        Posting posting = new Posting(op, date, entries, Optional.of(originalOperation));
+        return new OperationResult(OperationResult.OperationKind.TAX_CORRECTION, op, date,
+                List.of(posting), Optional.empty(), Optional.empty());
+    }
+
     public static OperationResult buy(OperationId op, LocalDate settle, Position current,
                                       long quantity, Money cleanPricePerUnit, Money accruedPerUnit,
                                       Money facePerUnit, Money commission) {
+        Objects.requireNonNull(commission, "commission");
+        return buy(op, settle, current, quantity, cleanPricePerUnit, accruedPerUnit, facePerUnit,
+                new Commissions(commission, Money.zero(commission.currency())));
+    }
+
+    public static OperationResult buy(OperationId op, LocalDate settle, Position current,
+                                      long quantity, Money cleanPricePerUnit, Money accruedPerUnit,
+                                      Money facePerUnit, Commissions commissions) {
         Objects.requireNonNull(current, "current");
         Objects.requireNonNull(op, "op");
         Objects.requireNonNull(settle, "settle");
+        Objects.requireNonNull(commissions, "commissions");
         requireQuantity(quantity, "quantity");
         Currency currency = currencyOf(current);
         requireNonNegative(cleanPricePerUnit, currency, "cleanPricePerUnit");
         requireNonNegative(accruedPerUnit, currency, "accruedPerUnit");
         requirePositive(facePerUnit, currency, "facePerUnit");
-        requireNonNegative(commission, currency, "commission");
+        requireNonNegative(commissions.brokerCommission(), currency, "brokerCommission");
+        requireNonNegative(commissions.otherCommission(), currency, "otherCommission");
         long newQuantity = Math.addExact(current.quantity(), quantity);
         Money cleanTotal = cleanPricePerUnit.multiply(quantity);
         Money accruedTotal = accruedPerUnit.multiply(quantity);
         Money faceTotal = facePerUnit.multiply(quantity);
-        Money cashOut = cleanTotal.add(accruedTotal).add(commission);
+        Money cashOut = cleanTotal.add(accruedTotal);
         Position after = new Position(current.id(), newQuantity,
                 current.carryingAmount().add(cleanTotal), current.faceAmount().add(faceTotal),
                 current.purchasedAccrued().add(accruedTotal));
@@ -59,9 +94,9 @@ public final class BondOperations {
         List<Posting.Entry> entries = new ArrayList<>();
         debit(entries, account(current, AccountKind.SECURITIES), cleanTotal);
         debit(entries, account(current, AccountKind.ACCRUED_INTEREST), accruedTotal);
-        debit(entries, flat(current, AccountKind.COMMISSION_EXPENSE), commission);
         credit(entries, flat(current, AccountKind.CASH), cashOut);
-        return securityResult(OperationResult.OperationKind.PURCHASE, op, settle, entries, current, after);
+        return securityResultWithAdjustments(OperationResult.OperationKind.PURCHASE, op, settle,
+                entries, current, after, commissions.total(), Money.zero(currency));
     }
 
     public static OperationResult coupon(OperationId op, LocalDate payDate, Position current,
@@ -80,16 +115,15 @@ public final class BondOperations {
         }
         Money release = min(current.purchasedAccrued(), grossCouponTotal);
         Money income = grossCouponTotal.subtract(release);
-        Money net = grossCouponTotal.subtract(tax);
         Position after = new Position(current.id(), current.quantity(), current.carryingAmount(),
                 current.faceAmount(), current.purchasedAccrued().subtract(release));
 
         List<Posting.Entry> entries = new ArrayList<>();
-        debit(entries, flat(current, AccountKind.CASH), net);
-        debit(entries, flat(current, AccountKind.TAX_EXPENSE), tax);
+        debit(entries, flat(current, AccountKind.CASH), grossCouponTotal);
         credit(entries, account(current, AccountKind.ACCRUED_INTEREST), release);
         credit(entries, flat(current, AccountKind.COUPON_INCOME), income);
-        return securityResult(OperationResult.OperationKind.COUPON, op, payDate, entries, current, after);
+        return securityResultWithAdjustments(OperationResult.OperationKind.COUPON, op, payDate,
+                entries, current, after, Money.zero(currency), tax);
     }
 
     public static OperationResult amortization(OperationId op, LocalDate payDate, Position current,
@@ -124,19 +158,28 @@ public final class BondOperations {
                 faceAfter, current.purchasedAccrued());
 
         List<Posting.Entry> entries = new ArrayList<>();
-        debit(entries, flat(current, AccountKind.CASH), paymentTotal.subtract(tax));
-        debit(entries, flat(current, AccountKind.TAX_EXPENSE), tax);
+        debit(entries, flat(current, AccountKind.CASH), paymentTotal);
         credit(entries, account(current, AccountKind.SECURITIES), carryingRemoved);
         signed(entries, flat(current, AccountKind.AMORTIZATION_GAIN), gain.negate());
-        return securityResult(OperationResult.OperationKind.AMORTIZATION, op, payDate, entries, current, after);
+        return securityResultWithAdjustments(OperationResult.OperationKind.AMORTIZATION, op, payDate,
+                entries, current, after, Money.zero(currency), tax);
     }
 
     public static OperationResult sell(OperationId op, LocalDate settle, Position current, long quantity,
                                        Money cleanPricePerUnit, Money accruedReceivedPerUnit,
                                        Money commission, Optional<Money> taxOnGainTotal) {
+        Objects.requireNonNull(commission, "commission");
+        return sell(op, settle, current, quantity, cleanPricePerUnit, accruedReceivedPerUnit,
+                new Commissions(commission, Money.zero(commission.currency())), taxOnGainTotal);
+    }
+
+    public static OperationResult sell(OperationId op, LocalDate settle, Position current, long quantity,
+                                       Money cleanPricePerUnit, Money accruedReceivedPerUnit,
+                                       Commissions commissions, Optional<Money> taxOnGainTotal) {
         Objects.requireNonNull(current, "current");
         Objects.requireNonNull(op, "op");
         Objects.requireNonNull(settle, "settle");
+        Objects.requireNonNull(commissions, "commissions");
         Objects.requireNonNull(taxOnGainTotal, "taxOnGainTotal");
         requireOpen(current);
         requireQuantity(quantity, "quantity");
@@ -146,7 +189,8 @@ public final class BondOperations {
         Currency currency = currencyOf(current);
         requireNonNegative(cleanPricePerUnit, currency, "cleanPricePerUnit");
         requireNonNegative(accruedReceivedPerUnit, currency, "accruedReceivedPerUnit");
-        requireNonNegative(commission, currency, "commission");
+        requireNonNegative(commissions.brokerCommission(), currency, "brokerCommission");
+        requireNonNegative(commissions.otherCommission(), currency, "otherCommission");
         Money tax = taxOnGainTotal.orElseGet(() -> Money.zero(currency));
         requireNonNegative(tax, currency, "taxOnGainTotal");
 
@@ -171,16 +215,15 @@ public final class BondOperations {
                         current.faceAmount().subtract(faceRemoved),
                         current.purchasedAccrued().subtract(accruedRelease));
 
-        Money netCash = cleanValue.add(accruedReceived).subtract(commission).subtract(tax);
+        Money grossCash = cleanValue.add(accruedReceived);
         List<Posting.Entry> entries = new ArrayList<>();
-        signed(entries, flat(current, AccountKind.CASH), netCash);
-        debit(entries, flat(current, AccountKind.COMMISSION_EXPENSE), commission);
-        debit(entries, flat(current, AccountKind.TAX_EXPENSE), tax);
+        signed(entries, flat(current, AccountKind.CASH), grossCash);
         credit(entries, account(current, AccountKind.SECURITIES), carryingRemoved);
         credit(entries, account(current, AccountKind.ACCRUED_INTEREST), accruedRelease);
         signed(entries, flat(current, AccountKind.COUPON_INCOME), accruedIncome.negate());
         signed(entries, flat(current, AccountKind.REALIZED_PNL), realizedPnL.negate());
-        return securityResult(OperationResult.OperationKind.SALE, op, settle, entries, current, after);
+        return securityResultWithAdjustments(OperationResult.OperationKind.SALE, op, settle,
+                entries, current, after, commissions.total(), tax);
     }
 
     private static OperationResult cashOperation(OperationResult.OperationKind kind, OperationId op,
@@ -198,11 +241,26 @@ public final class BondOperations {
         return new OperationResult(kind, op, date, List.of(posting), Optional.empty(), Optional.empty());
     }
 
-    private static OperationResult securityResult(OperationResult.OperationKind kind, OperationId op,
-                                                  LocalDate date, List<Posting.Entry> entries,
-                                                  Position before, Position after) {
-        Posting posting = new Posting(op, date, entries);
-        return new OperationResult(kind, op, date, List.of(posting), Optional.of(before), Optional.of(after));
+    private static OperationResult securityResultWithAdjustments(OperationResult.OperationKind kind,
+                                                                  OperationId op, LocalDate date,
+                                                                  List<Posting.Entry> entries,
+                                                                  Position before, Position after,
+                                                                  Money commissionTotal, Money tax) {
+        List<Posting> postings = new ArrayList<>();
+        postings.add(new Posting(op, date, entries));
+        if (!commissionTotal.isZero()) {
+            List<Posting.Entry> commissionEntries = new ArrayList<>();
+            debit(commissionEntries, flat(before, AccountKind.COMMISSION_EXPENSE), commissionTotal);
+            credit(commissionEntries, flat(before, AccountKind.CASH), commissionTotal);
+            postings.add(new Posting(op, date, commissionEntries));
+        }
+        if (!tax.isZero()) {
+            List<Posting.Entry> withholdingEntries = new ArrayList<>();
+            debit(withholdingEntries, flat(before, AccountKind.TAX_WITHHELD), tax);
+            credit(withholdingEntries, flat(before, AccountKind.CASH), tax);
+            postings.add(new Posting(op, date, withholdingEntries));
+        }
+        return new OperationResult(kind, op, date, postings, Optional.of(before), Optional.of(after));
     }
 
     private static Account account(Position position, AccountKind kind) {

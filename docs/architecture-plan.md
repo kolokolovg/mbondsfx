@@ -12,27 +12,37 @@ SQLite и compaction остаются будущими отдельными gate
   outbound ports; `:integrations` (`api :application`) — общие fixing DTO/API, provider SPI,
   transport/XML и generic bridge; `:integrations-moex` и `:integrations-cbr`
   (`implementation :integrations`) — vendor adapters, MOEX raw-контракт находится в первом;
-  `:persistence-memory` (`implementation :application`) — memory repository. Root compile-зависимости
-  — core/application/shared integrations, runtimeOnly — два provider modules и memory.
-- Все семь JPMS descriptors настроены. Root module `ru.onlychill.mbondsfx` использует три typed
-  service contracts; CLI `--profile=all|moex|cbr` создает только выбранные capabilities и memory,
-  не выполняя fetch. Gate4 одобрен: module-path blackbox проверяет произведенный `installDist`.
+  `:persistence-memory` (`implementation :application`) — in-memory ledger repository и investment-account
+  registry. Root compile-зависимости — core/application/shared integrations, runtimeOnly — два provider
+  modules и memory; root compile также включает SLF4J API (его требует JPMS descriptor).
+- Текущий toolchain всех семи проектов — JDK 25; root JPMS blackbox suite запускает `java`/`javac` JDK 25,
+  а обе compile-fixture команды используют `--release 25`. Wrapper использует Gradle 9.8.2 с закрепленным
+  `distributionSha256Sum`; JaCoCo tool version — 0.8.15.
+- Все семь JPMS descriptors настроены. Root module `ru.onlychill.mbondsfx` использует четыре typed
+  service contracts и при старте создает ledger и investment-account repositories с совпадающим provider ID;
+  CLI `--profile=all|moex|cbr` создает только выбранные market-data capabilities и memory, не выполняя fetch.
+  Module-path blackbox suite проверяет произведенный `installDist`.
   Остаются process-local memory, полная история `Ledger` без compaction, SQLite/migration stack вне
   scope. Исторические JavaExec main-runner suites мигрированы на JUnit Jupiter; проверки сохранены,
   а тестовая компиляция и whitebox execution по-прежнему остаются classpath-only.
+- `:core` accounting distinguishes spendable per-currency `CASH` from non-spendable
+  `TAX_WITHHELD`; explicit nonzero commissions and withholding use separate postings. `TAX_CORRECTION`
+  postings append a linked withholding adjustment, and application `TaxCorrectionService` commits
+  an explicitly supplied corrected total without rewriting the original receipt or journal. Details:
+  [accounting](core-accounting.md) and [investment accounts](investment-accounts.md).
 
 ## 2. Целевая топология и направление зависимостей
 
 | Модуль (Gradle / JPMS) | Роль | Зависимости (Gradle / JPMS) |
 |---|---|---|
 | `:core` / `…core` | агрегаты, расчеты, учет, доменный `IndexValueSource` | нет |
-| `:application` / `…application` | inbound use-cases + outbound порты: sparse read-контракт, репозиторий, журнал (read-only) | `api :core` / `requires transitive …core` |
+| `:application` / `…application` | inbound use-cases + outbound порты: sparse reference data, ledger repository/journal, investment-account repository/factory; coupon receipt and tax correction services | `api :core` / `requires transitive …core` |
 | `:integrations` / `…integrations` | generic-контракты: ОБА typed capability-provider SPI, общий transport/xml/fixing DTO, мост | `api :application` / `requires transitive …application` (+`…core` транзитивно) |
 | `:integrations-moex` / `…integrations.moex` | MOEX-провайдер: vendor-internal адаптер raw→sparse | `implementation :integrations` (+app/core транзитивно) / `requires` |
 | `:integrations-cbr` / `…integrations.cbr` | CBR-провайдер значений индексов | аналогично moex |
-| `:persistence-memory` / `…persistence.memory` | реализация репозитория в памяти | `implementation :application` / `requires` |
+| `:persistence-memory` / `…persistence.memory` | in-memory ledger repository и investment-account registry | `implementation :application` / `requires` |
 | `:persistence-sqlite` / `…persistence.sqlite` | **БУДУЩЕЕ**: JDBC, миграции, WAL | `:application` (+xerial, отдельный gate) |
-| root / `ru.onlychill.mbondsfx` | composition root | compile: `core`,`application`,`integrations` (только контракты); runtimeOnly: ОБА провайдера + `persistence-memory` |
+| root / `ru.onlychill.mbondsfx` | composition root | compile: `core`,`application`,`integrations`,`slf4j-api` (только контракты/API); runtimeOnly: ОБА провайдера + `persistence-memory` |
 
 Инварианты: `:core` ни от чего не зависит; `:application` НЕ зависит от `:integrations` и
 провайдеров; `:integrations`→`:application`→`:core` (ациклично); root — единственный, кто знает все.
@@ -139,6 +149,11 @@ public interface LedgerRepositoryFactory { LedgerRepository create(RepositoryCon
 - Репозиторий выбирается ServiceLoader-фабрикой (замена memory→sqlite без перекомпиляции
   core/application/root). Атомарные семантики (CAS, дедуп, sequence) определены в контракте
   фазы 1, проверяются реализацией фазы 2 — НЕ откладываются в «hardening» (§4.6, §6).
+- В текущем application API также есть отдельные `InvestmentAccountRepository` и
+  `InvestmentAccountRepositoryFactory`: инвестиционный account metadata не является `AccountKind` и не
+  меняет ledger. Root загружает эту фабрику с тем же provider ID, что и ledger repository; memory provider
+  предоставляет обе реализации. `CouponReceiptService` записывает только вручную подтвержденные
+  gross/tax/net, а `TaxCorrectionService` добавляет коррекцию только по caller-supplied corrected total.
 
 ### 4.5 `Ledger.state()`/`restore()`: граница доверия и пределы валидации
 
@@ -180,9 +195,10 @@ version = ?`). Порядок: явный монотонный per-portfolio `se
 точка на portfolio (memory — lock per `PortfolioId`; SQLite — один writer на файл + IMMEDIATE);
 параллельные читатели разрешены; конкурирующие commit'ы — детерминированная фикстура фазы 2
 (ровно один отклонен). Асинхронность: сейчас всё синхронно; будущий фасад — bounded writer
-executor + ограниченные readers (`CompletableFuture` только dispatch); JDBC блокирующий,
-JNI pinning на Java 21 (JEP 444; JEP 491 native-pinning не снимает) — «виртуальные потоки =
-неблокируемость» НЕ заявляем; соединение на поток без шаринга; неоднозначный commit
+executor + ограниченные readers (`CompletableFuture` только dispatch). JDK 25: JEP 491 снимает pinning
+виртуальных потоков на `synchronized`, однако native/foreign calls всё ещё могут pin. «Виртуальные
+потоки = неблокируемость» НЕ заявляем: JDBC остается блокирующим; соединение на поток без шаринга;
+неоднозначный commit
 автоматически НЕ повторяется. Сетевой параллелизм — внутри провайдера, bounded (JDK
 HttpClient), в домен не экспонируется.
 
@@ -190,8 +206,9 @@ HttpClient), в домен не экспонируется.
 
 Соответствие: `requires`↔`implementation`, `requires transitive`↔`api`, `requires static`↔
 `compileOnly`; Gradle согласованность не проверяет, поэтому architecture guard сопоставляет Gradle
-project edges с descriptors. Ниже — фактические phase4 descriptors; module-path behavior доказывает
-отдельный blackbox runner и Gate4.
+project edges с descriptors. Ниже — текущий снимок фактических `module-info.java`; module-path behavior
+доказывает отдельный blackbox runner на произведенном distribution и остается обязательной проверкой
+границ, независимо от истории фаз.
 
 ```
 module ru.onlychill.mbondsfx.core {
@@ -228,14 +245,18 @@ module ru.onlychill.mbondsfx.integrations.cbr {    // НЕТ exports
 module ru.onlychill.mbondsfx.persistence.memory {  // НЕТ exports
     requires ru.onlychill.mbondsfx.application;
     provides ru.onlychill.mbondsfx.application.port.LedgerRepositoryFactory
+        with ru.onlychill.mbondsfx.persistence.memory.InMemoryRepositoryFactory;
+    provides ru.onlychill.mbondsfx.application.port.InvestmentAccountRepositoryFactory
         with ru.onlychill.mbondsfx.persistence.memory.InMemoryRepositoryFactory; }
 
 module ru.onlychill.mbondsfx {
+    requires org.slf4j;
     requires ru.onlychill.mbondsfx.core; requires ru.onlychill.mbondsfx.application;
     requires ru.onlychill.mbondsfx.integrations;
     uses ru.onlychill.mbondsfx.integrations.provider.IndexValueSourceProvider;
     uses ru.onlychill.mbondsfx.integrations.provider.BondReferenceDataSourceProvider;
-    uses ru.onlychill.mbondsfx.application.port.LedgerRepositoryFactory; }   // + mainClass Main
+    uses ru.onlychill.mbondsfx.application.port.LedgerRepositoryFactory;
+    uses ru.onlychill.mbondsfx.application.port.InvestmentAccountRepositoryFactory; } // + mainClass Main
 ```
 
 Обязательные пункты:
@@ -275,14 +296,15 @@ natives, транзитивные notices, temp-каталог extraction, пр�
 
 Политика — корневой [AGENTS.md](../AGENTS.md) «Внешние зависимости и лицензии» (обновлена
 параллельно; план её отражает, не заменяет): тяжёлые фреймворки вне UI — НЕ выбор по умолчанию,
-не категорический запрет (обоснованные одобренные исключения возможны); сначала JDK 21 или
+не категорический запрет (обоснованные одобренные исключения возможны); сначала JDK 25 или
 малый проектный компонент; лёгкие поддерживаемые permissive-библиотеки допустимы при доказанной
 необходимости (не blanket); до добавления — точные координаты/версия, лицензия, транзитивные
 зависимости, natives/notices, JPMS-имя; copyleft/proprietary — отдельное явное одобрение;
 `java.sql` — только API, драйвер никогда в `:core`; JPMS descriptors настроены фазой 4, но их
   encapsulation подтверждается только module-path blackbox fixtures, не classpath tests. Production
-  code использует JDK без сторонних библиотек; JUnit Jupiter 5.12.2 и JUnit Platform 1.12.2
-  добавлены только в test configurations.
+  code использует JDK без сторонних библиотек, кроме root-only `slf4j-api` для логирования;
+  `slf4j-simple` — его runtime backend. JUnit Jupiter 5.12.2 и JUnit Platform 1.12.2 добавлены
+  только в test configurations.
 
 ## 6. Фазы (порядок Oracle-gate обязателен; координатор — единственный владелец settings.gradle, root build и удалений в shared `:integrations`)
 
@@ -357,15 +379,15 @@ classpath tests отдельно не считаются JPMS proof. Поздн�
 
 ## 8. Ключевые официальные источники
 
-JLS SE 21 гл.7 (https://docs.oracle.com/javase/specs/jls/se21/html/jls-7.html);
-ServiceLoader/ModuleLayer (https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ServiceLoader.html ,
-https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/ModuleLayer.html);
-java.sql/DriverManager (https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/module-summary.html ,
-https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/java/sql/DriverManager.html);
+JLS SE 25 гл.7 (https://docs.oracle.com/javase/specs/jls/se25/html/jls-7.html);
+ServiceLoader/ModuleLayer (https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/ServiceLoader.html ,
+https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ModuleLayer.html);
+java.sql/DriverManager (https://docs.oracle.com/en/java/javase/25/docs/api/java.sql/module-summary.html ,
+https://docs.oracle.com/en/java/javase/25/docs/api/java.sql/java/sql/DriverManager.html);
 JEP 444/491 (https://openjdk.org/jeps/444 , https://openjdk.org/jeps/491); Gradle
-application/java library/testing (https://docs.gradle.org/current/userguide/application_plugin.html ,
-https://docs.gradle.org/current/userguide/java_library_plugin.html ,
-https://docs.gradle.org/current/userguide/java_testing.html); SQLite (https://www.sqlite.org/wal.html ,
+application/java library/testing (https://docs.gradle.org/9.8.2/userguide/application_plugin.html ,
+https://docs.gradle.org/9.8.2/userguide/java_library_plugin.html ,
+https://docs.gradle.org/9.8.2/userguide/java_testing.html); SQLite (https://www.sqlite.org/wal.html ,
 https://www.sqlite.org/lang_transaction.html , https://www.sqlite.org/pragma.html ,
 https://www.sqlite.org/threadsafe.html , https://www.sqlite.org/copyright.html);
 xerial/sqlite-jdbc (https://github.com/xerial/sqlite-jdbc).
