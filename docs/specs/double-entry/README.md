@@ -57,7 +57,7 @@ latest-implemented = none.** Версия v1.0.0 явно утверждена �
 
 | Версия | Согласование | Реализация | Дата | Commit утверждения | Содержание |
 |---|---|---|---|---|---|
-| [v1.0.0](v1.0.0.md) | APPROVED | NOT_STARTED | 2026-10-21 | — (commit утверждения пока не создан) | Устранение хардкода плана счетов из double-entry движка: `AccountCode`, `LedgerChart`, chart в `LedgerState`, instance `BondOperations` |
+| [v1.0.0](v1.0.0.md) | APPROVED | NOT_STARTED | 2026-10-21 | `9c1dffe4b0276624fd9edc27412d3624ccdf1648` | Устранение хардкода плана счетов из double-entry движка: `AccountCode`, `LedgerChart`, chart в `LedgerState`, instance `BondOperations` |
 
 Статусы и evidence (commit-хэши, ссылки на проверки) фиксируются **только в
 индексе**. Шапка файла версии фиксирует статус на момент подготовки проекта;
