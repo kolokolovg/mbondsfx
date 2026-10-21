@@ -1,6 +1,7 @@
 package ru.onlychill.mbondsfx;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
@@ -16,6 +17,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /** Blackbox JPMS tests against the produced installDist distribution. */
 public final class ModulePathContractTests {
@@ -52,6 +55,23 @@ public final class ModulePathContractTests {
     @Test
     void installedDescriptorsDeclareFourTypedServiceBindings() {
         contract.inspectProductionModules();
+    }
+
+    @Test
+    void installedDistributionIncludesLegalFilesWithoutTestLibraries() throws IOException {
+        try (var licenses = Files.list(projectRoot.resolve("licenses"))) {
+            for (Path source : Stream.concat(Stream.of(projectRoot.resolve("LICENSE"),
+                    projectRoot.resolve("NOTICE")), licenses).toList()) {
+                Path relative = projectRoot.relativize(source);
+                assertArrayEquals(Files.readAllBytes(source), Files.readAllBytes(installDir.resolve(relative)),
+                        "Distribution must preserve legal file " + relative);
+            }
+        }
+        for (Path jar : contract.installedJars) {
+            String name = jar.getFileName().toString();
+            assertFalse(name.matches(".*(jqwik|archunit|junit|jacoco|opentest4j|apiguardian).*"),
+                    "Test/coverage dependency must not be shipped: " + name);
+        }
     }
 
     @Test

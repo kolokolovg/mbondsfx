@@ -61,6 +61,11 @@ subprojects {
             testImplementation platform("org.junit:junit-bom:${rootProject.ext.junitVersion}")
             testImplementation 'org.junit.jupiter:junit-jupiter'
             testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+            constraints {
+                testImplementation("org.slf4j:slf4j-api:${rootProject.ext.slf4jVersion}") {
+                    because 'Keep transitive test SLF4J aligned with the root runtime version.'
+                }
+            }
         }
     }
     tasks.withType(Test).configureEach {
@@ -78,6 +83,15 @@ java {
 application {
     mainModule = 'ru.onlychill.mbondsfx'
     mainClass = 'ru.onlychill.mbondsfx.Main'
+}
+
+distributions {
+    main {
+        contents {
+            from('LICENSE', 'NOTICE')
+            from('licenses') { into 'licenses' }
+        }
+    }
 }
 
 dependencies {

@@ -37,7 +37,7 @@
 `bond.calculation` (включая `calculation.port`) `-> bond/id/money`; `ledger -> id/money`; пакеты
 `id` и `money` — листья, не зависящие от других пакетов `core`. Не помещайте в `:core` внешние
 DTO, HTTP/XML, адаптеры, UI или DB-модели. Не импортируйте integration API в домен.
-Сохраняйте `:core` без внешних зависимостей: одобрение библиотеки для адаптера не разрешает
+Сохраняйте production `:core` без внешних зависимостей: одобрение библиотеки для адаптера не разрешает
 добавлять её в доменный модуль.
 
 `module-info.java` сохраняет `:core` leaf-модулем без `requires` и экспортирует только шесть
@@ -54,6 +54,11 @@ DTO, HTTP/XML, адаптеры, UI или DB-модели. Не импорти�
 domain/accounting/architecture assertions в соответствующие тесты и сохраняйте модульный guard
 `ArchitectureContractTests`. Тесты компилируются/исполняются на classpath (`compileTestJava` с
 `inferModulePath = false`); они не заменяют root module-path blackbox acceptance.
+
+Тестовый пилот использует также jqwik 1.9.2 для свойств текущего учета и ядро ArchUnit 1.5.1
+из Jupiter-тестов для проверки production-байткода. Эти зависимости, включая транзитивный
+SLF4J API ArchUnit, разрешены только в test scope и не добавляются в `module-info.java`.
+Целевая double-entry спецификация не считается реализованной из-за добавления проверок.
 
 ```bash
 ./gradlew :core:check

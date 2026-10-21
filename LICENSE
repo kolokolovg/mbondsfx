@@ -199,3 +199,20 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+-------------------------------------------------------------------------------
+Third-party components (informational notice; not a change to the license above)
+-------------------------------------------------------------------------------
+
+The Apache License 2.0 above applies to this project's own code. Dependencies
+and tools retain their respective licenses; they are not relicensed by this file.
+
+Third-party licenses include:
+  - EPL-2.0: jqwik, JUnit Jupiter/Platform, and JaCoCo (test/coverage scope).
+  - Apache-2.0: ArchUnit, its bundled Guava/failureaccess, OpenTest4J, and API Guardian.
+  - BSD: ASM, including the copy bundled in ArchUnit.
+  - MIT: SLF4J API and Simple.
+
+See NOTICE for component versions, scopes, attribution, and upstream sources.
+See licenses/ for copies of third-party license texts and notices. Test and
+coverage dependencies are not included in the application runtime distribution.

@@ -5,6 +5,12 @@ plugins {
 group = rootProject.group
 version = rootProject.version
 
+dependencies {
+    testImplementation 'net.jqwik:jqwik-api:1.9.2'
+    testRuntimeOnly 'net.jqwik:jqwik-engine:1.9.2'
+    testImplementation 'com.tngtech.archunit:archunit:1.5.1'
+}
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
@@ -18,4 +24,6 @@ tasks.named('compileTestJava', JavaCompile) {
 
 tasks.named('test', Test) {
     systemProperty 'coreMainSourceDir', project.layout.projectDirectory.dir('src/main/java').asFile.absolutePath
+    systemProperty 'coreMainClassesDirs', project.sourceSets.main.output.classesDirs.asPath
+    systemProperty 'jqwik.database', project.layout.buildDirectory.file('jqwik-database').get().asFile.absolutePath
 }

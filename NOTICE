@@ -1,0 +1,101 @@
+MOEX Bonds FX — project and third-party notices
+=============================================
+
+Copyright 2026 Gleb Kolokolov
+
+The project's own code is licensed under the Apache License, Version 2.0
+(see LICENSE). Third-party components retain their respective licenses.
+The inventory below covers application dependencies and the test/coverage
+libraries configured by this project, not the JDK or the Gradle distribution.
+Recorded versions were checked on 2026-10-21; update this file when they change.
+
+Application runtime
+-------------------
+
+SLF4J API and Simple 2.0.20
+  Coordinates: org.slf4j:slf4j-api, org.slf4j:slf4j-simple
+  Copyright (c) 2004-2023 QOS.ch. All rights reserved.
+  License: MIT — licenses/MIT-slf4j.txt (copied from META-INF/LICENSE.txt).
+  Source: https://github.com/qos-ch/slf4j/tree/v_2.0.20
+  API is used by the root composition module; Simple is its runtime backend.
+
+Test and coverage only — not application runtime
+------------------------------------------------
+
+jqwik API and Engine 1.9.2
+  Coordinates: net.jqwik:jqwik-api, net.jqwik:jqwik-engine
+  License: EPL-2.0 — licenses/EPL-2.0.md.
+  Source and upstream license:
+    https://github.com/jqwik-team/jqwik/tree/1.9.2
+    https://github.com/jqwik-team/jqwik/blob/1.9.2/LICENSE.md
+  Used unmodified in :core test scope. EPL-2.0 was explicitly approved by
+  the project owner for this addition. API and engine are separate artifacts;
+  optional jqwik modules are not included.
+
+ArchUnit Core 1.5.1
+  Coordinates: com.tngtech.archunit:archunit
+  Copyright 2026 TNG Technology Consulting GmbH.
+  License: Apache-2.0 — licenses/Apache-2.0.txt.
+  Source: https://github.com/TNG/ArchUnit/tree/v1.5.1
+  Used by ordinary Jupiter tests in :core, without the ArchUnit JUnit engine.
+  Its transitive SLF4J API dependency resolves to 2.0.20, aligned with the
+  root runtime version by a test dependency constraint.
+  Its redistributed libraries are separately licensed, not alternatives to
+  the license of ArchUnit itself:
+    - ASM 9.10.1 (relocated): BSD-3-Clause.
+      Copyright (c) 2000-2011 INRIA, France Telecom. All rights reserved.
+      Text: licenses/BSD-3-Clause-ASM.txt, copied from the ArchUnit JAR entry
+      com/tngtech/archunit/thirdparty/org/objectweb/asm/asm.license.
+      Source: https://gitlab.ow2.org/asm/asm/-/tree/ASM_9_10_1
+    - Google Guava 33.7.1-jre (relocated): Apache-2.0.
+      Text: licenses/Guava-license.txt, copied from the ArchUnit v1.5.1
+      licenses/guava.license file.
+      Source: https://github.com/google/guava/tree/v33.7.1
+    - failureaccess 1.0.3 (relocated, Guava transitive component): Apache-2.0.
+      Copyright Google LLC. Text: licenses/Apache-2.0.txt.
+      Package: com.tngtech.archunit.thirdparty.com.google.common.util.concurrent.internal.
+      Source: https://github.com/google/guava/tree/v33.7.1/futures/failureaccess
+      Version: failureaccess.version in guava-parent:33.7.1-jre.
+  Bundled versions: ArchUnit v1.5.1 gradle/libs.versions.toml.
+
+JUnit Jupiter 5.12.2 / JUnit Platform 1.12.2
+  Coordinates: org.junit.jupiter:junit-jupiter, junit-jupiter-api,
+    junit-jupiter-params, junit-jupiter-engine;
+    org.junit.platform:junit-platform-commons, junit-platform-engine,
+    junit-platform-launcher; org.junit:junit-bom:5.12.2 (version alignment).
+  License: EPL-2.0 — licenses/EPL-2.0.md.
+  Upstream notice: licenses/JUnit-LICENSE-notice.md, from the Jupiter API JAR.
+  Source: https://github.com/junit-team/junit5/tree/r5.12.2
+  jqwik's declared Platform 1.11.3 dependencies resolve to 1.12.2 through
+  the existing JUnit BOM; adding jqwik does not upgrade the project platform.
+
+OpenTest4J 1.3.0 / API Guardian 1.1.2
+  Coordinates: org.opentest4j:opentest4j; org.apiguardian:apiguardian-api.
+  License: Apache-2.0 — licenses/Apache-2.0.txt.
+  Sources:
+    https://github.com/ota4j-team/opentest4j/tree/r1.3.0
+    https://github.com/apiguardian-team/apiguardian/tree/r1.1.2
+  Transitive test APIs, not application dependencies.
+
+JaCoCo 0.8.15
+  Coordinates: org.jacoco:org.jacoco.agent, org.jacoco.ant,
+    org.jacoco.core, org.jacoco.report.
+  Provided by Mountainminds GmbH & Co. KG, Munich, and contributors.
+  License: EPL-2.0 — licenses/EPL-2.0.md.
+  Upstream notice: licenses/JaCoCo-about.html, copied from the 0.8.15 agent JAR.
+  Source: https://github.com/jacoco/jacoco/tree/v0.8.15
+  ASM 9.10.1 (org.ow2.asm:asm, asm-commons, asm-tree) is used by the coverage
+  tooling; relocated ASM also occurs in the agent. Its BSD license and
+  copyright notice are included in licenses/JaCoCo-about.html and
+  licenses/BSD-3-Clause-ASM.txt.
+
+Distribution and verification notes
+-----------------------------------
+
+installDist contains production modules and runtime SLF4J, not jqwik,
+ArchUnit, JUnit, or JaCoCo. Legal files include the broader development
+inventory for transparency; listing a component does not mean it is shipped.
+No native libraries were found in the added jqwik API/engine or ArchUnit JARs.
+The inspected module names are net.jqwik.api, net.jqwik.engine, and
+com.tngtech.archunit (automatic); tests continue to run on the classpath.
+This notice does not replace any upstream license or grant additional rights.

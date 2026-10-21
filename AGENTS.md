@@ -20,7 +20,7 @@
   `implementation` зависит от `:application`.
 - Root compile-зависимости — `:core`, `:application`, `:integrations`; `runtimeOnly` зависимости —
   `:integrations-moex`, `:integrations-cbr`, `:persistence-memory`. Только root использует SLF4J
-  (`slf4j-api` на compile/runtime, `slf4j-simple` только на runtime); остальные модули от него не зависят.
+  (`slf4j-api` на compile/runtime, `slf4j-simple` только на runtime); остальные production-модули от него не зависят.
 
 Направление зависимостей: `:integrations` → `:application` → `:core`; `:integrations-moex` и
 `:integrations-cbr` → `:integrations` (транзитивно `:application`/`:core`);
@@ -100,9 +100,13 @@ DTO, UI- или DB-модели.
   проверяемые инварианты. Не подменяйте неизвестные значения нулем или предполагаемыми правилами
   выпуска.
 - Не добавляйте внешние production-зависимости и не меняйте финансовое поведение без явного
-  требования. SLF4J остается только в root composition module; `slf4j-simple` — его runtime backend.
+  требования. Production SLF4J остается только в root composition module; `slf4j-simple` — его runtime backend.
   Для test/coverage используются JUnit Jupiter 5.12.2, JUnit Platform 1.12.2 и JaCoCo
   0.8.15; не переносите тестовые библиотеки или JaCoCo agent в production/runtime classpath.
+- Для тестового пилота `:core` разрешены jqwik API/engine 1.9.2 (EPL-2.0, явно одобрена
+  пользователем) и ядро ArchUnit 1.5.1 (Apache-2.0/BSD). ArchUnit использует SLF4J API только
+  в test scope. JUnit Platform остается 1.12.2; отдельный ArchUnit engine не используется.
+  Лицензия кода проекта не меняется; сторонние лицензии и notices перечислены в `NOTICE`.
 - Если архитектурную границу намеренно меняют, обновите соответствующие инструкции и документы
   вместе с кодом; не оставляйте их противоречащими новой границе.
 
