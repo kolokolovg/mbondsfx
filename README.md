@@ -24,14 +24,14 @@
 ## Документация
 
 - [Методики расчетов и реестр первоисточников](docs/README.md)
-- [Архитектурный план и фактическая топология модулей](docs/architecture-plan.md)
-- [Брокерский счет, ИИС-3 и подтверждение купонов](docs/investment-accounts.md)
-- [Налоги и оценка досрочного закрытия ИИС-3](docs/bond-tax-and-iis3.md)
-- [Доменная модель облигаций](docs/core-domain.md)
-- [Учет портфеля](docs/core-accounting.md)
+- [Архитектурный план и фактическая топология модулей](docs/guides/architecture-plan.md)
+- [Брокерский счет, ИИС-3 и подтверждение купонов](docs/guides/investment-accounts.md)
+- [Налоги и оценка досрочного закрытия ИИС-3](docs/methodology/bond-tax-and-iis3.md)
+- [Доменная модель облигаций](docs/guides/core-domain.md)
+- [Учет портфеля](docs/guides/core-accounting.md)
 - [Версионируемая спецификация double-entry](docs/specs/double-entry/README.md) — проект целевой архитектуры, а не описание уже реализованного изменения
-- [Проверки свойств и архитектуры](docs/verification.md)
-- [Интеграции рыночных данных](docs/core-market-data.md)
+- [Проверки свойств и архитектуры](docs/guides/verification.md)
+- [Интеграции рыночных данных](docs/guides/core-market-data.md)
 
 Правила работы для AI-агентов: [AGENTS.md](AGENTS.md) и инструкции соответствующих модулей.
 

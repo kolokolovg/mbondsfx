@@ -10,6 +10,7 @@ import java.util.Optional;
 import ru.onlychill.mbondsfx.core.bond.calculation.port.IndexValueSource;
 import ru.onlychill.mbondsfx.core.id.IndexId;
 import ru.onlychill.mbondsfx.core.money.DayCount;
+import ru.onlychill.mbondsfx.core.money.DayCounts;
 import ru.onlychill.mbondsfx.core.money.Money;
 import ru.onlychill.mbondsfx.core.bond.AmortizationEvent;
 import ru.onlychill.mbondsfx.core.bond.BondDefinition;
@@ -98,6 +99,8 @@ public final class BondCalculations {
     /**
      * Accrued amount for the half-open elapsed interval [period start, settle). KnownCoupon accrual
      * is an explicit linear year-fraction proration, not a universal issuer-specific NCD formula.
+     * On the start date of a period the elapsed share is zero for every day-count, and the day-count is not
+     * consulted for that zero-length interval (docs/specs/day-count/v1.0.1.md, points 1-2).
      */
     public static AccruedInterest accrued(BondDefinition bond, LocalDate settle,
                                            DayCount dayCount, IndexValueSource fixings) {
@@ -128,7 +131,9 @@ public final class BondCalculations {
         DatedPeriod period = matching.orElseThrow();
         if (coupon instanceof KnownCoupon known) {
             KnownCoupon.Amount amount = knownAmount(known, period);
-            BigDecimal elapsed = nonNegativeYearFraction(dayCount, period.accrualStart(), settle);
+            BigDecimal elapsed = settle.equals(period.accrualStart())
+                    ? BigDecimal.ZERO
+                    : segmentYearFraction(dayCount, period.accrualStart(), settle);
             BigDecimal full = positiveYearFraction(dayCount, period.accrualStart(), period.accrualEnd());
             BigDecimal ratio = elapsed.divide(full, DECIMAL128);
             return new AccruedInterest(amount.amountPerUnit().multiply(ratio), matching, dayCount);
@@ -237,9 +242,24 @@ public final class BondCalculations {
     private static BigDecimal segmentInterest(Principal principal, LocalDate start, LocalDate end,
                                               BigDecimal annualRate, BigDecimal indexCoefficient,
                                               DayCount dayCount) {
-        BigDecimal fraction = positiveYearFraction(dayCount, start, end);
+        BigDecimal fraction = segmentYearFraction(dayCount, start, end);
         BigDecimal nominal = nominalAt(principal, start);
         return nominal.multiply(annualRate).multiply(indexCoefficient).multiply(fraction);
+    }
+
+    /**
+     * 30/360 and 30E/360 cap the day of month at 30, so a positive interval such as 30 Jan to 31 Jan legitimately
+     * has a zero year fraction, and that segment contributes nothing to the coupon or accrued interest. Only these
+     * two instances, compared by identity, may yield zero. Every other day-count, including a lookalike instance of
+     * either convention and 30E+/360, must yield a positive fraction for a positive interval. A negative fraction is
+     * rejected in every case. This check also governs the elapsed share of a KnownCoupon accrual after its start; the
+     * full period of a KnownCoupon is checked separately by positiveYearFraction and stays strict.
+     */
+    private static BigDecimal segmentYearFraction(DayCount dayCount, LocalDate start, LocalDate end) {
+        if (dayCount == DayCounts.thirty360() || dayCount == DayCounts.thirtyE360()) {
+            return nonNegativeYearFraction(dayCount, start, end);
+        }
+        return positiveYearFraction(dayCount, start, end);
     }
 
     private static BigDecimal positiveYearFraction(DayCount dayCount, LocalDate start, LocalDate end) {
@@ -287,8 +307,12 @@ public final class BondCalculations {
     private static BigDecimal indexCoefficient(IndexationRule rule, LocalDate reference,
                                                IndexValueSource fixings) {
         LocalDate observationDate = rule.observationDate(reference);
-        return fixingValue(fixings, rule.index(), observationDate)
+        BigDecimal coefficient = fixingValue(fixings, rule.index(), observationDate)
                 .divide(rule.baseIndexValue(), DECIMAL128);
+        if (coefficient.signum() < 0) {
+            throw new IllegalArgumentException("Indexation must not produce negative index coefficient");
+        }
+        return coefficient;
     }
 
     private static BigDecimal fixingValue(IndexValueSource values, IndexId index, LocalDate date) {

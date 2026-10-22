@@ -22,6 +22,7 @@ import ru.onlychill.mbondsfx.core.money.Money;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -150,6 +151,68 @@ final class FoundationContractTests {
                 "ACT/ACT.ISDA days are actual calendar days");
         assertEquals(-366, DayCounts.actActIsda().days(LocalDate.of(2021, 1, 1), LocalDate.of(2020, 1, 1)),
                 "ACT/ACT.ISDA days are signed");
+    }
+
+    /** Rows of docs/specs/day-count/v1.0.0.md, section 3: the day count of each row for 30/360, 30E/360, 30E+/360. */
+    @Test
+    void thirty360FamilyReproducesTheSpecificationTable() {
+        assertSpecificationRow(LocalDate.of(2026, 1, 30), LocalDate.of(2026, 1, 31), 0, 0, 1);
+        assertSpecificationRow(LocalDate.of(2026, 1, 31), LocalDate.of(2026, 3, 31), 60, 60, 61);
+        assertSpecificationRow(LocalDate.of(2026, 1, 15), LocalDate.of(2026, 3, 31), 76, 75, 76);
+        assertSpecificationRow(LocalDate.of(2026, 1, 29), LocalDate.of(2026, 3, 31), 62, 61, 62);
+        assertSpecificationRow(LocalDate.of(2026, 12, 31), LocalDate.of(2027, 1, 31), 30, 30, 31);
+    }
+
+    private static void assertSpecificationRow(LocalDate start, LocalDate end, long thirty360, long thirtyE360,
+                                               long thirtyEPlus360) {
+        assertEquals(thirty360, DayCounts.thirty360().days(start, end), "30/360 days " + start + " -> " + end);
+        assertEquals(thirtyE360, DayCounts.thirtyE360().days(start, end), "30E/360 days " + start + " -> " + end);
+        assertEquals(thirtyEPlus360, DayCounts.thirtyEPlus360().days(start, end),
+                "30E+/360 days " + start + " -> " + end);
+        assertEquals(0, DayCounts.thirty360().yearFraction(start, end)
+                        .compareTo(new BigDecimal(thirty360).divide(new BigDecimal("360"), MathContext.DECIMAL128)),
+                "30/360 year fraction is days / 360 " + start + " -> " + end);
+        assertEquals(0, DayCounts.thirtyEPlus360().yearFraction(start, end)
+                        .compareTo(new BigDecimal(thirtyEPlus360).divide(new BigDecimal("360"),
+                                MathContext.DECIMAL128)),
+                "30E+/360 year fraction is days / 360 " + start + " -> " + end);
+    }
+
+    @Test
+    void thirty360FamilyReverseIntervalNegatesTheForwardResult() {
+        // Forward (15 Jan, 31 Jan) is 16 days under 30/360. The reverse interval is its negation, not a direct
+        // evaluation that would read the 31st as the 30th and give -15.
+        assertEquals(-16, DayCounts.thirty360().days(LocalDate.of(2026, 1, 31), LocalDate.of(2026, 1, 15)),
+                "30/360 reverse interval is the negated forward result");
+        assertEquals(-76, DayCounts.thirty360().days(LocalDate.of(2026, 3, 31), LocalDate.of(2026, 1, 15)),
+                "30/360 reverse of table row 3");
+        assertEquals(-61, DayCounts.thirtyEPlus360().days(LocalDate.of(2026, 3, 31), LocalDate.of(2026, 1, 31)),
+                "30E+/360 reverse of table row 2");
+        assertEquals(-61, DayCounts.thirtyE360().days(LocalDate.of(2026, 3, 31), LocalDate.of(2026, 1, 29)),
+                "30E/360 reverse of table row 4");
+    }
+
+    @Test
+    void thirty360FamilyCodesResolveToTheirOwnSingletons() {
+        assertSame(DayCounts.thirty360(), DayCounts.of("30/360"), "30/360 code lookup");
+        assertSame(DayCounts.thirtyEPlus360(), DayCounts.of("30E+/360"), "30E+/360 code lookup");
+        assertNotSame(DayCounts.thirty360(), DayCounts.thirtyE360(), "30/360 is not the 30E/360 instance");
+        assertNotSame(DayCounts.thirtyE360(), DayCounts.thirtyEPlus360(), "30E+/360 is not the 30E/360 instance");
+        assertThrows(IllegalArgumentException.class, () -> DayCounts.of("30E+360"), "codes are matched exactly");
+        assertThrows(IllegalArgumentException.class, () -> DayCounts.of("30/360 "), "codes are matched exactly");
+    }
+
+    /**
+     * docs/specs/day-count/v1.0.1.md, point 4: the definitions stay as they are, so 31 Jan to 31 Jan is one day for
+     * 30E+/360.
+     */
+    @Test
+    void thirty360FamilyKeepsTheDefinitionOfAThirtyFirstToItselfUnchanged() {
+        LocalDate thirtyFirst = LocalDate.of(2026, 1, 31);
+        assertEquals(1, DayCounts.thirtyEPlus360().days(thirtyFirst, thirtyFirst),
+                "30E+/360 counts the 31st to the 31st as one day");
+        assertEquals(0, DayCounts.thirty360().days(thirtyFirst, thirtyFirst), "30/360 counts zero days");
+        assertEquals(0, DayCounts.thirtyE360().days(thirtyFirst, thirtyFirst), "30E/360 counts zero days");
     }
 
     @Test

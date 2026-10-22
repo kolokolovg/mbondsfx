@@ -24,7 +24,7 @@ Test and coverage only — not application runtime
 
 jqwik API and Engine 1.9.2
   Coordinates: net.jqwik:jqwik-api, net.jqwik:jqwik-engine
-  License: EPL-2.0 — licenses/EPL-2.0.md.
+  License: EPL-2.0 — licenses/EPL-2.0.txt.
   Source and upstream license:
     https://github.com/jqwik-team/jqwik/tree/1.9.2
     https://github.com/jqwik-team/jqwik/blob/1.9.2/LICENSE.md
@@ -48,7 +48,7 @@ ArchUnit Core 1.5.1
       com/tngtech/archunit/thirdparty/org/objectweb/asm/asm.license.
       Source: https://gitlab.ow2.org/asm/asm/-/tree/ASM_9_10_1
     - Google Guava 33.7.1-jre (relocated): Apache-2.0.
-      Text: licenses/Guava-license.txt, copied from the ArchUnit v1.5.1
+      Text: licenses/Apache-2.0-Guava.txt, copied from the ArchUnit v1.5.1
       licenses/guava.license file.
       Source: https://github.com/google/guava/tree/v33.7.1
     - failureaccess 1.0.3 (relocated, Guava transitive component): Apache-2.0.
@@ -63,8 +63,8 @@ JUnit Jupiter 5.12.2 / JUnit Platform 1.12.2
     junit-jupiter-params, junit-jupiter-engine;
     org.junit.platform:junit-platform-commons, junit-platform-engine,
     junit-platform-launcher; org.junit:junit-bom:5.12.2 (version alignment).
-  License: EPL-2.0 — licenses/EPL-2.0.md.
-  Upstream notice: licenses/JUnit-LICENSE-notice.md, from the Jupiter API JAR.
+  License: EPL-2.0 — licenses/EPL-2.0.txt.
+  Upstream notice: licenses/JUnit-LICENSE-notice.txt, from the Jupiter API JAR.
   Source: https://github.com/junit-team/junit5/tree/r5.12.2
   jqwik's declared Platform 1.11.3 dependencies resolve to 1.12.2 through
   the existing JUnit BOM; adding jqwik does not upgrade the project platform.
@@ -81,18 +81,18 @@ JaCoCo 0.8.15
   Coordinates: org.jacoco:org.jacoco.agent, org.jacoco.ant,
     org.jacoco.core, org.jacoco.report.
   Provided by Mountainminds GmbH & Co. KG, Munich, and contributors.
-  License: EPL-2.0 — licenses/EPL-2.0.md.
-  Upstream notice: licenses/JaCoCo-about.html, copied from the 0.8.15 agent JAR.
+  License: EPL-2.0 — licenses/EPL-2.0.txt.
+  Upstream notice: licenses/JaCoCo-about.txt, copied from the 0.8.15 agent JAR.
   Source: https://github.com/jacoco/jacoco/tree/v0.8.15
   ASM 9.10.1 (org.ow2.asm:asm, asm-commons, asm-tree) is used by the coverage
   tooling; relocated ASM also occurs in the agent. Its BSD license and
-  copyright notice are included in licenses/JaCoCo-about.html and
+  copyright notice are included in licenses/JaCoCo-about.txt and
   licenses/BSD-3-Clause-ASM.txt.
 
 Mutation testing — build-time only, not part of check
 ------------------------------------------------------
 PIT (pitest) and its Gradle plugin are used only by the manual `:core:pitest` task
-(see docs/verification.md). They are not on any test or runtime classpath, are not
+(see docs/guides/verification.md). They are not on any test or runtime classpath, are not
 part of `check`, and are not shipped in installDist.
 
 PIT core 1.30.1 and JUnit 5 plugin 1.2.3

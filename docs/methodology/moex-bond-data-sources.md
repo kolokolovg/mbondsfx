@@ -3,7 +3,7 @@
 Инвентаризация источников, использованных для документа
 [bond-yield-methodology.md](bond-yield-methodology.md). Проверка выполнена 21.10.2026 живыми
 запросами к `iss.moex.com` и `www.moex.com` с явно отключённым прокси. Смежные материалы по
-адаптерам — в [core-market-data.md](core-market-data.md).
+адаптерам — в [core-market-data.md](../guides/core-market-data.md).
 
 Оговорки:
 

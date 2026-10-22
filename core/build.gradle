@@ -1,6 +1,6 @@
 plugins {
     id 'java-library'
-    // PIT mutation testing: build/test tooling only, not wired into `check`; see docs/verification.md.
+    // PIT mutation testing: build/test tooling only, not wired into `check`; see docs/guides/verification.md.
     id 'info.solidsoft.pitest' version '1.19.0'
 }
 
@@ -33,7 +33,7 @@ tasks.named('test', Test) {
 // PIT (mutation testing), build/test-only. Run manually: ./gradlew :core:pitest
 // Not part of `check`. mutationThreshold fails only the pitest task and the weekly workflow.
 // Baseline 452/511 (88%) before kill tests; 497/511 (97%) after. Remaining survivors are equivalent or dead code
-// (see docs/verification.md), so the threshold sits a few points below the achieved score.
+// (see docs/guides/verification.md), so the threshold sits a few points below the achieved score.
 pitest {
     pitestVersion = '1.30.1'
     junit5PluginVersion = '1.2.3'

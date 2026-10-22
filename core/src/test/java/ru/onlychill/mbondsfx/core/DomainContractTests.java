@@ -654,6 +654,202 @@ final class DomainContractTests {
     }
 
     @Test
+    void thirtyE360ZeroFractionOnThirtyFirstAccruesNothingAndDoesNotThrow() {
+        DatedPeriod p = period(LocalDate.of(2026, 1, 30), LocalDate.of(2026, 3, 30));
+        LocalDate thirtyFirst = LocalDate.of(2026, 1, 31);
+        BondDefinition fixedBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(p))), principal("1000", List.of(), Optional.empty()));
+        AccruedInterest onThirtyFirst = BondCalculations.accrued(fixedBond, thirtyFirst, DayCounts.thirtyE360(),
+                noFixings());
+        assertTrue(onThirtyFirst.amount().isZero(), "30E/360 counts no days between the 30th and the 31st");
+        assertEquals(p, onThirtyFirst.period().orElseThrow(), "the 31st still belongs to the period");
+        assertEquals(money("0.28", RUB), BondCalculations.accrued(fixedBond, LocalDate.of(2026, 2, 1),
+                DayCounts.thirtyE360(), noFixings()).amount(), "1 Feb adds one 30E/360 day: 1000 * 10% / 360");
+        assertEquals(money("0.27", RUB), BondCalculations.accrued(fixedBond, thirtyFirst, DayCounts.act365F(),
+                noFixings()).amount(), "ACT/365F keeps the same one-day interval positive");
+        assertEquals(money("0.27", RUB), BondCalculations.accrued(fixedBond, thirtyFirst, DayCounts.actActIsda(),
+                noFixings()).amount(), "ACT/ACT.ISDA keeps the same one-day interval positive");
+
+        DatedPeriod tail = period(thirtyFirst, p.accrualEnd());
+        BondDefinition tailBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(tail))), principal("1000", List.of(), Optional.empty()));
+        Money full = BondCalculations.couponAmount(fixedBond, p, DayCounts.thirtyE360(), noFixings());
+        assertEquals(money("16.67", RUB), full, "two whole months are 60 30E/360 days");
+        assertEquals(full, BondCalculations.couponAmount(tailBond, tail, DayCounts.thirtyE360(), noFixings()),
+                "the tail from the 31st carries the whole coupon: the zero segment adds no weight");
+
+        DatedPeriod oneDayAt30 = period(LocalDate.of(2026, 1, 30), thirtyFirst);
+        KnownCoupon knownOneDay = new KnownCoupon(List.of(new KnownCoupon.Amount(oneDayAt30, money("1", RUB))));
+        BondDefinition knownBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(knownOneDay),
+                principal("1000", List.of(), Optional.empty()));
+        IllegalArgumentException knownZeroBasis = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(knownBond, LocalDate.of(2026, 1, 30), DayCounts.thirtyE360(),
+                        noFixings()));
+        assertEquals("DayCount must return a positive fraction for a positive interval", knownZeroBasis.getMessage(),
+                "a KnownCoupon proration over a zero 30E/360 period stays rejected");
+    }
+
+    @Test
+    void thirtyE360LookalikeDayCountKeepsTheStrictFractionCheck() {
+        DayCount lookalike = new DayCount() {
+            @Override
+            public BigDecimal yearFraction(LocalDate start, LocalDate end) {
+                return DayCounts.thirtyE360().yearFraction(start, end);
+            }
+
+            @Override
+            public long days(LocalDate start, LocalDate end) {
+                return DayCounts.thirtyE360().days(start, end);
+            }
+        };
+        DatedPeriod p = period(LocalDate.of(2026, 1, 30), LocalDate.of(2026, 3, 30));
+        BondDefinition fixedBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(p))), principal("1000", List.of(), Optional.empty()));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(fixedBond, LocalDate.of(2026, 1, 31), lookalike, noFixings()));
+        assertEquals("DayCount must return a positive fraction for a positive interval", rejected.getMessage(),
+                "only the DayCounts.thirtyE360() instance is exempt; a 30E/360 lookalike stays strict");
+    }
+
+    @Test
+    void thirty360ZeroSegmentOnThirtyFirstAccruesNothingAndThirtyEPlus360AccruesOneDay() {
+        DatedPeriod p = period(LocalDate.of(2026, 1, 30), LocalDate.of(2026, 3, 30));
+        LocalDate thirtyFirst = LocalDate.of(2026, 1, 31);
+        BondDefinition fixedBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(p))), principal("1000", List.of(), Optional.empty()));
+        assertEquals(money("0", RUB), BondCalculations.accrued(fixedBond, thirtyFirst, DayCounts.thirty360(),
+                noFixings()).amount(), "30/360 counts no days between the 30th and the 31st");
+        assertEquals(money("0", RUB), BondCalculations.accrued(fixedBond, thirtyFirst, DayCounts.thirtyE360(),
+                noFixings()).amount(), "30E/360 counts no days between the 30th and the 31st");
+        assertEquals(money("0.28", RUB), BondCalculations.accrued(fixedBond, thirtyFirst,
+                DayCounts.thirtyEPlus360(), noFixings()).amount(),
+                "30E+/360 counts 30 Jan to 31 Jan as one day: 1000 * 10% / 360");
+        assertEquals(p, BondCalculations.accrued(fixedBond, thirtyFirst, DayCounts.thirty360(), noFixings())
+                .period().orElseThrow(), "the 31st still belongs to the period");
+
+        Money full = BondCalculations.couponAmount(fixedBond, p, DayCounts.thirty360(), noFixings());
+        assertEquals(money("16.67", RUB), full, "two whole months are 60 30/360 days");
+        DatedPeriod tail = period(thirtyFirst, p.accrualEnd());
+        BondDefinition tailBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(tail))), principal("1000", List.of(), Optional.empty()));
+        assertEquals(full, BondCalculations.couponAmount(tailBond, tail, DayCounts.thirty360(), noFixings()),
+                "the tail from the 31st carries the whole coupon under 30/360");
+        DatedPeriod oneDayAt30 = period(LocalDate.of(2026, 1, 30), thirtyFirst);
+        BondDefinition oneDayBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(oneDayAt30))), principal("1000", List.of(), Optional.empty()));
+        assertEquals(money("0", RUB), BondCalculations.couponAmount(oneDayBond, oneDayAt30, DayCounts.thirty360(),
+                noFixings()), "a FixedCoupon period of zero 30/360 fraction gives a zero coupon");
+    }
+
+    @Test
+    void thirty360LookalikeAndKnownFullPeriodKeepTheStrictFractionCheck() {
+        DayCount lookalike = new DayCount() {
+            @Override
+            public BigDecimal yearFraction(LocalDate start, LocalDate end) {
+                return DayCounts.thirty360().yearFraction(start, end);
+            }
+
+            @Override
+            public long days(LocalDate start, LocalDate end) {
+                return DayCounts.thirty360().days(start, end);
+            }
+        };
+        DatedPeriod p = period(LocalDate.of(2026, 1, 30), LocalDate.of(2026, 3, 30));
+        BondDefinition fixedBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(p))), principal("1000", List.of(), Optional.empty()));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(fixedBond, LocalDate.of(2026, 1, 31), lookalike, noFixings()));
+        assertEquals("DayCount must return a positive fraction for a positive interval", rejected.getMessage(),
+                "only the DayCounts.thirty360() instance is exempt; a 30/360 lookalike stays strict");
+
+        DatedPeriod oneDayAt30 = period(LocalDate.of(2026, 1, 30), LocalDate.of(2026, 1, 31));
+        KnownCoupon knownOneDay = new KnownCoupon(List.of(new KnownCoupon.Amount(oneDayAt30, money("1", RUB))));
+        BondDefinition knownBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(knownOneDay),
+                principal("1000", List.of(), Optional.empty()));
+        IllegalArgumentException knownZeroBasis = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(knownBond, LocalDate.of(2026, 1, 30), DayCounts.thirty360(),
+                        noFixings()));
+        assertEquals("DayCount must return a positive fraction for a positive interval", knownZeroBasis.getMessage(),
+                "a KnownCoupon full period over a zero 30/360 period stays rejected");
+    }
+
+    /**
+     * v1.0.1, points 1-2: on the start date of a period that starts on the 31st, accrued interest is zero for 30E+/360,
+     * 30/360, 30E/360 and the ACT conventions, and the day-count is not consulted for that zero-length interval.
+     */
+    @Test
+    void accrualOnThirtyFirstStartDateIsZeroForEveryConventionWithoutConsultingIt() {
+        DatedPeriod p = period(LocalDate.of(2026, 1, 31), LocalDate.of(2026, 3, 31));
+        assertThrows(IllegalStateException.class, () -> refusingZeroLength(DayCounts.thirtyEPlus360())
+                .days(LocalDate.of(2026, 1, 31), LocalDate.of(2026, 1, 31)), "the refusing day-count does fail");
+        KnownCoupon known = new KnownCoupon(List.of(new KnownCoupon.Amount(p, money("10.00", RUB))));
+        FixedCoupon fixed = new FixedCoupon(new BigDecimal("0.10"), List.of(p));
+        for (Coupon coupon : List.of(known, fixed)) {
+            BondDefinition bond = bond(ISSUE, Optional.of(MATURITY), Optional.of(coupon),
+                    principal("1000", List.of(), Optional.empty()));
+            for (String code : List.of("30E+/360", "30/360", "30E/360", "ACT/365F", "ACT/360", "ACT/ACT.ISDA")) {
+                AccruedInterest accrued = BondCalculations.accrued(bond, p.accrualStart(),
+                        refusingZeroLength(DayCounts.of(code)), noFixings());
+                assertEquals(money("0", RUB), accrued.amount(),
+                        coupon.getClass().getSimpleName() + " accrues nothing on the start date under " + code);
+                assertEquals(Optional.of(p), accrued.period(), "the start date belongs to its period");
+            }
+        }
+    }
+
+    /**
+     * v1.0.1, point 3: after the start, the elapsed share of a KnownCoupon follows the segment rule. Inside the zero
+     * segment of a period that starts on the 30th, the identity instances of 30/360 and 30E/360 give zero, a lookalike
+     * is rejected with the segment message, and 30E+/360 and ACT/365F give a positive share.
+     */
+    @Test
+    void knownCouponElapsedShareAfterTheStartFollowsTheSegmentStrictness() {
+        DatedPeriod p = period(LocalDate.of(2026, 1, 30), LocalDate.of(2026, 3, 30));
+        LocalDate thirtyFirst = LocalDate.of(2026, 1, 31);
+        KnownCoupon known = new KnownCoupon(List.of(new KnownCoupon.Amount(p, money("10.00", RUB))));
+        BondDefinition knownBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(known),
+                principal("1000", List.of(), Optional.empty()));
+        assertEquals(money("0", RUB), BondCalculations.accrued(knownBond, thirtyFirst, DayCounts.thirty360(),
+                noFixings()).amount(), "identity 30/360 gives zero inside the zero segment");
+        assertEquals(money("0", RUB), BondCalculations.accrued(knownBond, thirtyFirst, DayCounts.thirtyE360(),
+                noFixings()).amount(), "identity 30E/360 gives zero inside the zero segment");
+        IllegalArgumentException lookalike30360 = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(knownBond, thirtyFirst, lookalikeOf(DayCounts.thirty360()),
+                        noFixings()));
+        assertEquals("DayCount must return a positive fraction for a positive interval", lookalike30360.getMessage(),
+                "a 30/360 lookalike is not exempt on the elapsed share");
+        IllegalArgumentException lookalike30E = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(knownBond, thirtyFirst, lookalikeOf(DayCounts.thirtyE360()),
+                        noFixings()));
+        assertEquals("DayCount must return a positive fraction for a positive interval", lookalike30E.getMessage(),
+                "a 30E/360 lookalike is not exempt on the elapsed share");
+        assertEquals(money("0.17", RUB), BondCalculations.accrued(knownBond, thirtyFirst, DayCounts.thirtyEPlus360(),
+                noFixings()).amount(), "30E+/360 counts one day of sixty: 10.00 * 1 / 60");
+        assertEquals(money("0.17", RUB), BondCalculations.accrued(knownBond, thirtyFirst, DayCounts.act365F(),
+                noFixings()).amount(), "ACT/365F counts one day of fifty-nine: 10.00 * 1 / 59");
+    }
+
+    @Test
+    void negativeIndexCoefficientIsRejectedForIndexLinkedCouponAndAccrued() {
+        DatedPeriod p = period(ISSUE, LocalDate.of(2026, 3, 1));
+        IndexationRule couponRule = rule(new IndexId("CPI"), new BigDecimal("100"), ISSUE, 0);
+        BondDefinition linked = bond(ISSUE, Optional.of(MATURITY), Optional.of(new IndexLinkedCoupon(
+                new BigDecimal("0.10"), couponRule, IndexLinkedCoupon.ReferenceDate.PERIOD_START, List.of(p))),
+                principal("1000", List.of(), Optional.empty()));
+        IndexValueSource negative = fixings(fixing(couponRule.index(), ISSUE, "-1"));
+        IllegalArgumentException coupon = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.couponAmount(linked, p, DayCounts.act365F(), negative));
+        assertEquals("Indexation must not produce negative index coefficient", coupon.getMessage(),
+                "a negative index observation rejects the index-linked coupon");
+        IllegalArgumentException accrued = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(linked, ISSUE.plusDays(15), DayCounts.act365F(), negative));
+        assertEquals("Indexation must not produce negative index coefficient", accrued.getMessage(),
+                "a negative index observation rejects the index-linked accrual");
+        assertEquals(money("0", RUB), BondCalculations.couponAmount(linked, p, DayCounts.act365F(),
+                fixings(fixing(couponRule.index(), ISSUE, "0"))), "a zero index observation gives a zero coupon");
+    }
+
+    @Test
     void everyDistinctAmortizationDateInsideCouponPeriodStartsOneSegment() {
         DatedPeriod halfYear = period(ISSUE, LocalDate.of(2026, 7, 1));
         BondDefinition twoEvents = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
@@ -702,6 +898,44 @@ final class DomainContractTests {
         assertEquals(RATE, wrappedDate.index(), "foreign date keeps the requested index");
         assertEquals(ISSUE, wrappedDate.date(), "foreign date is replaced by the requested date");
         assertSame(otherDate, wrappedDate.getCause(), "foreign date keeps the source as cause");
+    }
+
+    /** Refuses every zero-length query, so a calculation that consults the day-count on such an interval fails. */
+    private static DayCount refusingZeroLength(DayCount delegate) {
+        return new DayCount() {
+            @Override
+            public BigDecimal yearFraction(LocalDate start, LocalDate end) {
+                refuseZeroLength(start, end);
+                return delegate.yearFraction(start, end);
+            }
+
+            @Override
+            public long days(LocalDate start, LocalDate end) {
+                refuseZeroLength(start, end);
+                return delegate.days(start, end);
+            }
+        };
+    }
+
+    private static void refuseZeroLength(LocalDate start, LocalDate end) {
+        if (start.equals(end)) {
+            throw new IllegalStateException("day-count consulted for the zero-length interval on " + start);
+        }
+    }
+
+    /** Same values as the delegate but another object, so it earns no identity exemption. */
+    private static DayCount lookalikeOf(DayCount delegate) {
+        return new DayCount() {
+            @Override
+            public BigDecimal yearFraction(LocalDate start, LocalDate end) {
+                return delegate.yearFraction(start, end);
+            }
+
+            @Override
+            public long days(LocalDate start, LocalDate end) {
+                return delegate.days(start, end);
+            }
+        };
     }
 
     private static BondDefinition zeroCouponBond() {

@@ -30,7 +30,7 @@
 
 Метаданные счёта (`InvestmentAccount`) отдельны от доменного `core.ledger.AccountCode`. Отсутствие
 записи о счёте означает **unknown**, а не `BROKERAGE` по умолчанию. Детали контрактов счёта — в
-[investment-accounts.md](investment-accounts.md).
+[investment-accounts.md](../guides/investment-accounts.md).
 
 `IIS_3` несёт условия (`Iis3Terms`): `openingDate` (дата заключения договора), `minimumTerm`
 (целое число лет), опционально `contractualCloseDate`. Эти условия **не означают** права на льготу;
@@ -444,6 +444,6 @@ Optional<List<Money>> actualRefunds, Optional<PenaltyEstimate>, Optional<Money> 
 
 ## 13. Ссылки
 
-- [investment-accounts.md](investment-accounts.md) — контракты счёта.
+- [investment-accounts.md](../guides/investment-accounts.md) — контракты счёта.
 - [bond-yield-methodology.md](bond-yield-methodology.md) — доходность и денежные потоки.
 - [moex-bond-data-sources.md](moex-bond-data-sources.md) — реестр источников MOEX.

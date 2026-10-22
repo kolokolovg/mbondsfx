@@ -3,14 +3,14 @@
 Дата: 2026-10-22. Срез кода: `6b6bc30e240eb0284792f8f4bfaf19f0afa9ad51`.
 
 **Исполнение завершено 2026-10-22** после отдельного указания пользователя.
-Результаты и статусы — в [реестре спецификаций](specs/double-entry/README.md).
+Результаты и статусы — в [реестре спецификаций](../specs/double-entry/README.md).
 Ниже сохранен исходный план; NOT_STARTED относится к моменту его подготовки.
 
 ## Основание и статус
 
-- Нормативный источник — [спецификация v1.0.0](specs/double-entry/v1.0.0.md),
+- Нормативный источник — [спецификация v1.0.0](../specs/double-entry/v1.0.0.md),
   прежде всего разделы 5–17. Этот план задает порядок работ, а не новые требования.
-- По [реестру](specs/double-entry/README.md) версия имеет статусы
+- По [реестру](../specs/double-entry/README.md) версия имеет статусы
   **APPROVED / NOT_STARTED**. Устаревшая DRAFT-шапка файла версии не определяет
   актуальный статус. Файл утвержденной спецификации не редактируется.
 - Подготовка плана не начинает реализацию и не отменяет ранее зафиксированное
@@ -210,9 +210,9 @@ source/AST guard в существующем сьюте без новых биб
 
 ### 6. Согласовать документацию и выполнить единую приемку
 
-1. Вместе с кодом обновить `docs/core-accounting.md`,
-   `docs/architecture-plan.md`, `docs/investment-accounts.md`,
-   `docs/bond-tax-and-iis3.md`, а также root/core/application/memory `AGENTS.md`.
+1. Вместе с кодом обновить `docs/guides/core-accounting.md`,
+   `docs/guides/architecture-plan.md`, `docs/guides/investment-accounts.md`,
+   `docs/methodology/bond-tax-and-iis3.md`, а также root/core/application/memory `AGENTS.md`.
    Зафиксировать chart в state, freeze, policy как источник словаря, constructor
    injection и единственную точку создания policy в composition root.
    Не менять `Main`: сервисы учета в нем сейчас не создаются.
