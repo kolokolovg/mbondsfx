@@ -35,7 +35,8 @@ import ru.onlychill.mbondsfx.core.id.PortfolioId;
 import ru.onlychill.mbondsfx.core.id.PositionId;
 import ru.onlychill.mbondsfx.core.id.SecurityId;
 import ru.onlychill.mbondsfx.core.ledger.Account;
-import ru.onlychill.mbondsfx.core.ledger.AccountKind;
+import ru.onlychill.mbondsfx.core.ledger.AccountCode;
+import ru.onlychill.mbondsfx.core.ledger.BondAccountingPolicy;
 import ru.onlychill.mbondsfx.core.ledger.BondOperations;
 import ru.onlychill.mbondsfx.core.ledger.Ledger;
 import ru.onlychill.mbondsfx.core.ledger.LedgerState;
@@ -52,6 +53,8 @@ class InvestmentAccountContractTests {
     private static final Currency RUB = Currency.getInstance("RUB");
     private static final LocalDate OPENING = LocalDate.of(2020, 1, 1);
     private static final LocalDate OP_DATE = LocalDate.of(2026, 10, 20);
+    private static final BondAccountingPolicy POLICY = BondAccountingPolicy.standard();
+    private static final BondOperations OPERATIONS = new BondOperations(POLICY);
 
     @Test
     void explicitAccountTypesAndIisTermsAreValidatedAndCalendarDerived() {
@@ -119,12 +122,12 @@ class InvestmentAccountContractTests {
         OperationRecord journal = couponRecord(fixture.ledger(), fixture.account().portfolio(), receipt.operation());
         assertEquals(2, journal.postings().size(), "nonzero withholding is a distinct balanced posting");
         assertPostingIdentities(journal);
-        assertEquals(money("87"), totalBalance(journal, AccountKind.CASH),
+        assertEquals(money("87"), totalBalance(journal, POLICY.cash()),
                 "gross cash and the separate withholding credit produce net available cash");
-        assertEquals(money("100"), totalPositive(journal, AccountKind.CASH),
+        assertEquals(money("100"), totalPositive(journal, POLICY.cash()),
                 "the base coupon posting records gross cash before withholding");
-        assertEquals(money("13"), totalBalance(journal, AccountKind.TAX_WITHHELD));
-        assertEquals(money("100"), totalNegative(journal, AccountKind.COUPON_INCOME).negate());
+        assertEquals(money("13"), totalBalance(journal, POLICY.taxWithheld()));
+        assertEquals(money("100"), totalNegative(journal, POLICY.couponIncome()).negate());
         Ledger state = Ledger.restore(receipt.ledgerSnapshot().state());
         assertEquals(money("1077"), state.cashBalances().get(RUB));
         assertEquals(money("13"), state.taxWithheldBalances().get(RUB));
@@ -141,8 +144,8 @@ class InvestmentAccountContractTests {
         assertEquals(money("0"), receipt.taxWithheldTotal());
         OperationRecord coupon = couponRecord(fixture.ledger(), account.portfolio(), receipt.operation());
         assertEquals(1, coupon.postings().size(), "zero withholding creates no extra tax posting");
-        assertEquals(money("100"), totalBalance(coupon, AccountKind.CASH));
-        assertEquals(money("0"), totalBalance(coupon, AccountKind.TAX_WITHHELD));
+        assertEquals(money("100"), totalBalance(coupon, POLICY.cash()));
+        assertEquals(money("0"), totalBalance(coupon, POLICY.taxWithheld()));
         assertPostingIdentities(coupon);
 
         LedgerSnapshot before = fixture.ledger().load(account.portfolio()).orElseThrow();
@@ -165,14 +168,14 @@ class InvestmentAccountContractTests {
         OperationRecord journal = couponRecord(fixture.ledger(), account.portfolio(), receipt.operation());
         assertEquals(2, journal.postings().size());
         assertPostingIdentities(journal);
-        assertEquals(money("87"), totalBalance(journal, AccountKind.CASH));
-        assertEquals(money("100"), totalPositive(journal, AccountKind.CASH));
-        assertEquals(money("13"), totalBalance(journal, AccountKind.TAX_WITHHELD));
-        assertEquals(money("20"), totalNegative(journal, AccountKind.ACCRUED_INTEREST).negate());
-        assertEquals(money("80"), totalNegative(journal, AccountKind.COUPON_INCOME).negate(),
+        assertEquals(money("87"), totalBalance(journal, POLICY.cash()));
+        assertEquals(money("100"), totalPositive(journal, POLICY.cash()));
+        assertEquals(money("13"), totalBalance(journal, POLICY.taxWithheld()));
+        assertEquals(money("20"), totalNegative(journal, POLICY.accruedInterest()).negate());
+        assertEquals(money("80"), totalNegative(journal, POLICY.couponIncome()).negate(),
                 "purchased accrued interest release means income alone is not gross coupon");
-        assertEquals(money("100"), totalBalance(journal, AccountKind.CASH)
-                .add(totalBalance(journal, AccountKind.TAX_WITHHELD)),
+        assertEquals(money("100"), totalBalance(journal, POLICY.cash())
+                .add(totalBalance(journal, POLICY.taxWithheld())),
                 "journal reconstructs gross cash from net available cash and actual tax withheld");
     }
 
@@ -183,18 +186,18 @@ class InvestmentAccountContractTests {
         TestAccountRepository accounts = new TestAccountRepository();
         accounts.register(account);
         TestLedgerRepository repository = new TestLedgerRepository();
-        LedgerApplicationService ledgerService = new LedgerApplicationService(repository);
+        LedgerApplicationService ledgerService = new LedgerApplicationService(repository, POLICY);
         Currency usd = Currency.getInstance("USD");
-        ledgerService.apply(portfolio, false, BondOperations.opening(operation("multi-rub-opening"),
+        ledgerService.apply(portfolio, false, OPERATIONS.opening(operation("multi-rub-opening"),
                 OP_DATE.minusDays(2), portfolio, RUB, money("1000")));
-        ledgerService.apply(portfolio, false, BondOperations.opening(operation("multi-usd-opening"),
+        ledgerService.apply(portfolio, false, OPERATIONS.opening(operation("multi-usd-opening"),
                 OP_DATE.minusDays(2), portfolio, usd, new Money(new BigDecimal("1000"), usd)));
 
         Position rubPosition = boughtPosition(ledgerService, repository, portfolio,
                 "MULTI-RUB", RUB, money("100"), operation("multi-rub-buy"));
         Position usdPosition = boughtPosition(ledgerService, repository, portfolio,
                 "MULTI-USD", usd, new Money(new BigDecimal("80"), usd), operation("multi-usd-buy"));
-        CouponReceiptService service = new CouponReceiptService(accounts, repository);
+        CouponReceiptService service = new CouponReceiptService(accounts, repository, POLICY);
         service.confirm(account, rubPosition, operation("multi-rub-coupon"), OP_DATE,
                 money("100"), money("13"), money("87"), false);
         service.confirm(account, usdPosition, operation("multi-usd-coupon"), OP_DATE,
@@ -230,7 +233,7 @@ class InvestmentAccountContractTests {
         OperationRecord originalRecord = couponRecord(fixture.ledger(), fixture.account().portfolio(),
                 receipt.operation());
         Ledger beforeCorrection = Ledger.restore(receipt.ledgerSnapshot().state());
-        TaxCorrectionService service = new TaxCorrectionService(fixture.repository());
+        TaxCorrectionService service = new TaxCorrectionService(fixture.repository(), POLICY);
 
         int loadsBefore = fixture.repository().loadCalls;
         LedgerSnapshot firstCorrection = service.correct(fixture.account().portfolio(),
@@ -246,8 +249,8 @@ class InvestmentAccountContractTests {
         assertEquals(money("8"), afterFirst.taxWithheldBalances().get(RUB));
         assertEquals(money("1082"), afterFirst.cashBalances().get(RUB),
                 "reducing withholding credits the cash subaccount by the adjustment");
-        assertEquals(money("-5"), totalBalance(downRecord, AccountKind.TAX_WITHHELD));
-        assertEquals(money("5"), totalBalance(downRecord, AccountKind.CASH));
+        assertEquals(money("-5"), totalBalance(downRecord, POLICY.taxWithheld()));
+        assertEquals(money("5"), totalBalance(downRecord, POLICY.cash()));
         assertEquals(Optional.of(receipt.operation()), downRecord.postings().getFirst().adjustsOperation());
         assertPostingIdentities(downRecord);
         assertEquals(originalRecord, couponRecord(fixture.ledger(), fixture.account().portfolio(),
@@ -275,12 +278,12 @@ class InvestmentAccountContractTests {
     }
 
     @Test
-    void taxCorrectionRejectsNoOpsUnknownLedgersWrongCurrencyPolicyAndDuplicateIdsAtomically() {
+    void deN05_taxCorrectionPreservesQueryErrorsAndRejectsInvalidCorrectionsAtomically() {
         Fixture fixture = fixture(InvestmentAccount.brokerage(portfolio("tax-correction-invalid")));
         CouponReceipt receipt = fixture.coupons().confirm(fixture.account(), fixture.position(),
                 operation("tax-correction-invalid-original"), OP_DATE,
                 money("100"), money("13"), money("87"), false);
-        TaxCorrectionService service = new TaxCorrectionService(fixture.repository());
+        TaxCorrectionService service = new TaxCorrectionService(fixture.repository(), POLICY);
         LedgerSnapshot before = fixture.ledger().load(fixture.account().portfolio()).orElseThrow();
         List<OperationRecord> journalBefore = fixture.ledger().operations(fixture.account().portfolio());
 
@@ -294,16 +297,23 @@ class InvestmentAccountContractTests {
         assertThrows(IllegalArgumentException.class, () -> service.correct(fixture.account().portfolio(),
                 operation("tax-correction-no-tax-original"), OP_DATE.plusDays(1),
                 operation("purchase-" + fixture.account().portfolio().value()), money("8"), false));
+        assertThrows(IllegalArgumentException.class, () -> service.correct(fixture.account().portfolio(),
+                operation("tax-correction-unknown-original"), OP_DATE.plusDays(1),
+                operation("unknown-original-operation"), money("8"), false),
+                "an unknown original-operation query is passed through as IllegalArgumentException");
         assertEquals(before, fixture.ledger().load(fixture.account().portfolio()).orElseThrow());
         assertEquals(journalBefore, fixture.ledger().operations(fixture.account().portfolio()));
 
-        assertThrows(IllegalStateException.class, () -> new TaxCorrectionService(new TestLedgerRepository()).correct(
+        assertThrows(IllegalStateException.class, () -> new TaxCorrectionService(new TestLedgerRepository(), POLICY).correct(
                 portfolio("unknown-tax-ledger"), operation("missing-ledger-correction"), OP_DATE,
                 receipt.operation(), money("8"), false));
 
         OperationId correctionId = operation("tax-correction-duplicate");
         service.correct(fixture.account().portfolio(), correctionId, OP_DATE.plusDays(1), receipt.operation(),
                 money("8"), false);
+        assertThrows(IllegalArgumentException.class, () -> service.correct(fixture.account().portfolio(),
+                operation("correction-of-correction"), OP_DATE.plusDays(2), correctionId, money("9"), false),
+                "a correction operation cannot be queried as the original withholding operation");
         LedgerSnapshot afterFirst = fixture.ledger().load(fixture.account().portfolio()).orElseThrow();
         List<OperationRecord> journalAfterFirst = fixture.ledger().operations(fixture.account().portfolio());
         assertThrows(DuplicateOperationException.class, () -> service.correct(fixture.account().portfolio(),
@@ -318,11 +328,28 @@ class InvestmentAccountContractTests {
         LedgerSnapshot failedBefore = failed.ledger().load(failed.account().portfolio()).orElseThrow();
         List<OperationRecord> failedJournal = failed.ledger().operations(failed.account().portfolio());
         failed.repository().failNextCommit = true;
-        assertThrows(IllegalStateException.class, () -> new TaxCorrectionService(failed.repository()).correct(
+        assertThrows(IllegalStateException.class, () -> new TaxCorrectionService(failed.repository(), POLICY).correct(
                 failed.account().portfolio(), operation("failed-tax-correction"), OP_DATE.plusDays(1),
                 failedReceipt.operation(), money("8"), false));
         assertEquals(failedBefore, failed.ledger().load(failed.account().portfolio()).orElseThrow());
         assertEquals(failedJournal, failed.ledger().operations(failed.account().portfolio()));
+    }
+
+    @Test
+    void deN07_taxCorrectionServiceRejectsPersistedChartDriftBeforeCommit() {
+        Fixture fixture = fixture(InvestmentAccount.brokerage(portfolio("tax-correction-chart-drift")));
+        CouponReceipt receipt = fixture.coupons().confirm(fixture.account(), fixture.position(),
+                operation("chart-drift-original"), OP_DATE, money("100"), money("13"), money("87"), false);
+        LedgerSnapshot before = fixture.ledger().load(fixture.account().portfolio()).orElseThrow();
+        List<OperationRecord> journalBefore = fixture.ledger().operations(fixture.account().portfolio());
+        TaxCorrectionService service = new TaxCorrectionService(fixture.repository(),
+                policyWithCashCode("AVAILABLE_CASH"));
+
+        assertThrows(IllegalStateException.class, () -> service.correct(fixture.account().portfolio(),
+                        operation("chart-drift-correction"), OP_DATE.plusDays(1), receipt.operation(), money("8"), false),
+                "tax correction rejects a chart that differs by value");
+        assertEquals(before, fixture.ledger().load(fixture.account().portfolio()).orElseThrow());
+        assertEquals(journalBefore, fixture.ledger().operations(fixture.account().portfolio()));
     }
 
     @Test
@@ -331,7 +358,7 @@ class InvestmentAccountContractTests {
         LedgerSnapshot before = fixture.ledger().load(fixture.account().portfolio()).orElseThrow();
         List<OperationRecord> beforeJournal = fixture.ledger().operations(fixture.account().portfolio());
         CouponReceiptService unknownRegistryService = new CouponReceiptService(
-                new TestAccountRepository(), fixture.repository());
+                new TestAccountRepository(), fixture.repository(), POLICY);
         assertThrows(IllegalStateException.class, () -> unknownRegistryService.confirm(fixture.account(),
                 fixture.position(), operation("unknown-account"), OP_DATE,
                 money("10"), money("0"), money("10"), false));
@@ -340,7 +367,7 @@ class InvestmentAccountContractTests {
         conflictingRegistry.register(InvestmentAccount.iis3(fixture.account().portfolio(),
                 new Iis3Terms(OPENING, Period.ofYears(3), Optional.empty())));
         CouponReceiptService conflictingRegistryService = new CouponReceiptService(
-                conflictingRegistry, fixture.repository());
+                conflictingRegistry, fixture.repository(), POLICY);
         assertThrows(IllegalArgumentException.class, () -> conflictingRegistryService.confirm(fixture.account(),
                 fixture.position(), operation("conflicting-account"), OP_DATE,
                 money("10"), money("0"), money("10"), false));
@@ -352,9 +379,9 @@ class InvestmentAccountContractTests {
     void couponConfirmationRejectsStalePositionWithoutSideEffects() {
         Fixture fixture = fixture(InvestmentAccount.brokerage(portfolio("coupon-stale-position")));
         Position stale = fixture.position();
-        OperationResult additionalPurchase = BondOperations.buy(operation("position-changed"), OP_DATE,
+        OperationResult additionalPurchase = OPERATIONS.buy(operation("position-changed"), OP_DATE,
                 stale, 1, money("10"), money("0"), money("100"), money("0"));
-        new LedgerApplicationService(fixture.repository()).apply(fixture.account().portfolio(), false,
+        new LedgerApplicationService(fixture.repository(), POLICY).apply(fixture.account().portfolio(), false,
                 additionalPurchase);
         LedgerSnapshot before = fixture.ledger().load(fixture.account().portfolio()).orElseThrow();
         List<OperationRecord> beforeJournal = fixture.ledger().operations(fixture.account().portfolio());
@@ -548,18 +575,18 @@ class InvestmentAccountContractTests {
         InvestmentAccountRepository accounts = new TestAccountRepository();
         accounts.register(account);
         TestLedgerRepository repository = new TestLedgerRepository();
-        LedgerApplicationService ledgerService = new LedgerApplicationService(repository);
+        LedgerApplicationService ledgerService = new LedgerApplicationService(repository, POLICY);
         PortfolioId portfolio = account.portfolio();
         ledgerService.apply(portfolio, false,
-                BondOperations.opening(operation("opening-" + portfolio.value()), OP_DATE.minusDays(2),
+                OPERATIONS.opening(operation("opening-" + portfolio.value()), OP_DATE.minusDays(2),
                         portfolio, RUB, money("1000")));
         Position empty = Position.empty(new PositionId(portfolio, new SecurityId("TEST")), RUB);
-        OperationResult purchase = BondOperations.buy(operation("purchase-" + portfolio.value()),
+        OperationResult purchase = OPERATIONS.buy(operation("purchase-" + portfolio.value()),
                 OP_DATE.minusDays(1), empty, 1, money("10"), accruedPerUnit, money("100"), money("0"));
         ledgerService.apply(portfolio, false, purchase);
         Position current = repository.load(portfolio).orElseThrow().state().positions()
                 .get(empty.id().security());
-        return new Fixture(account, current, accounts, repository, new CouponReceiptService(accounts, repository));
+        return new Fixture(account, current, accounts, repository, new CouponReceiptService(accounts, repository, POLICY));
     }
 
     private static OperationRecord couponRecord(LedgerRepository repository, PortfolioId portfolio,
@@ -568,21 +595,21 @@ class InvestmentAccountContractTests {
                 .findFirst().orElseThrow();
     }
 
-    private static Money totalPositive(OperationRecord record, AccountKind kind) {
+    private static Money totalPositive(OperationRecord record, AccountCode code) {
         return record.postings().stream().flatMap(posting -> posting.entries().stream())
-                .filter(entry -> entry.account().kind() == kind && entry.amount().isPositive())
+                .filter(entry -> entry.account().code().equals(code) && entry.amount().isPositive())
                 .map(entry -> entry.amount()).reduce(Money.zero(RUB), Money::add);
     }
 
-    private static Money totalBalance(OperationRecord record, AccountKind kind) {
+    private static Money totalBalance(OperationRecord record, AccountCode code) {
         return record.postings().stream().flatMap(posting -> posting.entries().stream())
-                .filter(entry -> entry.account().kind() == kind)
+                .filter(entry -> entry.account().code().equals(code))
                 .map(entry -> entry.amount()).reduce(Money.zero(RUB), Money::add);
     }
 
-    private static Money totalNegative(OperationRecord record, AccountKind kind) {
+    private static Money totalNegative(OperationRecord record, AccountCode code) {
         return record.postings().stream().flatMap(posting -> posting.entries().stream())
-                .filter(entry -> entry.account().kind() == kind && entry.amount().isNegative())
+                .filter(entry -> entry.account().code().equals(code) && entry.amount().isNegative())
                 .map(entry -> entry.amount()).reduce(Money.zero(RUB), Money::add);
     }
 
@@ -594,7 +621,7 @@ class InvestmentAccountContractTests {
 
     private static Map<Account, Money> incomeBalances(Ledger ledger) {
         return ledger.balances().entrySet().stream()
-                .filter(entry -> entry.getKey().kind() == AccountKind.COUPON_INCOME)
+                .filter(entry -> entry.getKey().code().equals(POLICY.couponIncome()))
                 .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
@@ -603,7 +630,7 @@ class InvestmentAccountContractTests {
                                            OperationId operation) {
         Position empty = Position.empty(new PositionId(portfolio, new SecurityId(security)), currency);
         Money price = new Money(new BigDecimal("10"), currency);
-        service.apply(portfolio, false, BondOperations.buy(operation, OP_DATE.minusDays(1), empty,
+        service.apply(portfolio, false, OPERATIONS.buy(operation, OP_DATE.minusDays(1), empty,
                 1, price, Money.zero(currency), face, Money.zero(currency)));
         return repository.load(portfolio).orElseThrow().state().positions().get(empty.id().security());
     }
@@ -611,6 +638,12 @@ class InvestmentAccountContractTests {
     private static PortfolioId portfolio(String value) { return new PortfolioId(value); }
     private static OperationId operation(String value) { return new OperationId(value); }
     private static Money money(String amount) { return new Money(new BigDecimal(amount), RUB); }
+
+    private static BondAccountingPolicy policyWithCashCode(String cashCode) {
+        return new BondAccountingPolicy(new AccountCode(cashCode), POLICY.equity(), POLICY.securities(),
+                POLICY.accruedInterest(), POLICY.couponIncome(), POLICY.amortizationGain(),
+                POLICY.realizedPnl(), POLICY.taxWithheld(), POLICY.commissionExpense());
+    }
 
     private record Fixture(InvestmentAccount account, Position position, InvestmentAccountRepository accounts,
                            TestLedgerRepository repository, CouponReceiptService coupons) {
@@ -640,7 +673,7 @@ class InvestmentAccountContractTests {
                 throw new IllegalStateException("stale test ledger version");
             }
             LedgerState before = snapshot.map(LedgerSnapshot::state)
-                    .orElseGet(() -> Ledger.open(commit.portfolio(), commit.before().allowNegativeCash()).state());
+                    .orElseGet(() -> Ledger.open(commit.portfolio(), commit.before().chart(), commit.before().allowNegativeCash()).state());
             if (!before.equals(commit.before())) {
                 throw new IllegalStateException("stale test ledger state");
             }

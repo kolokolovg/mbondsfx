@@ -17,8 +17,9 @@ public record LedgerCommit(long expectedVersion, LedgerState before,
         Objects.requireNonNull(operation, "operation");
         Objects.requireNonNull(after, "after");
         if (!before.portfolio().equals(after.portfolio())
+                || !before.chart().equals(after.chart())
                 || before.allowNegativeCash() != after.allowNegativeCash()) {
-            throw new IllegalArgumentException("Commit cannot change portfolio or negative-cash policy");
+            throw new IllegalArgumentException("Commit cannot change portfolio, chart, or negative-cash policy");
         }
         if (expectedVersion == 0 && !isEmpty(before)) {
             throw new IllegalArgumentException("Version 0 must start from an explicit empty ledger state");

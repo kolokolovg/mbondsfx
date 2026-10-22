@@ -4,6 +4,40 @@
 проводит введенные пользователем денежные суммы и изменение позиции, но не
 рассчитывает котировки, купоны, комиссии, налоги или доходность.
 
+## План счетов и конфигурация
+
+`Account` идентифицируется `(portfolio, AccountCode, security?, currency)`.
+`AccountCode` — value-тип с форматом `^[A-Z][A-Z0-9_]{0,31}$`, а не enum.
+Единственный источник bond-словаря — `BondAccountingPolicy`: девять различных
+обязательных слотов, `standard()` или явно заданные нестандартные коды.
+`policy.chart()` строит равный по value неизменяемый `LedgerChart`,
+`policy.operations()` — instance `BondOperations`. Static-фасада нет.
+
+```java
+BondAccountingPolicy policy = BondAccountingPolicy.standard();
+BondOperations operations = policy.operations();
+Ledger ledger = Ledger.open(portfolio, policy.chart(), false);
+```
+
+Composition root создает одну policy и передает ее генератору и всем
+accounting-сервисам через конструкторы; chart не передается в каждую операцию.
+Текущий `Main` эти сервисы не создает. `LedgerChart` хранится в `LedgerState`
+и не меняется после открытия. `Ledger.restore(state)` самодостаточен;
+application-сервисы отвергают snapshot с chart, не равным `policy.chart()`.
+Смена chart существующего ledger требует отдельной будущей миграции.
+
+Движок использует роли, не стандартные имена: ровно один плоский spendable-код,
+пустой либо singleton noNegative (подмножество spendable), один adjustable
+и его spendable-counterpart. Два securityScoped-кода зеркалят соответственно
+carrying и purchased accrued позиции. Дополнительные известные плоские коды
+без ролей допустимы. Коллекции chart неизменяемы и обходятся по значению кода.
+Ни `Account`, ни движок не зависят от `BondAccountingPolicy`; known/scoping
+проверяются в `apply`, `restore` и `balance`, а не конструктором `Account`.
+
+Имена счетов в таблицах и примерах ниже относятся к **стандартной policy**;
+те же формулы работают с нестандартными кодами. `OperationKind`, включая
+`TAX_CORRECTION`, остается enum: конфигурируется словарь счетов, не таксономия операций.
+
 ## Знаки, единицы и валюты
 
 В `Posting.Entry` дебет положительный, кредит отрицательный; сумма записей
@@ -31,7 +65,7 @@
 
 ```java
 Commissions fees = new Commissions(brokerFee, otherFee);
-BondOperations.buy(operation, date, position, quantity, cleanPricePerUnit,
+operations.buy(operation, date, position, quantity, cleanPricePerUnit,
         accruedPerUnit, facePerUnit, fees);
 ```
 Округление применяется только при пропорциональном снятии части carrying cost,
@@ -145,9 +179,27 @@ cost равна 9 850 × 1 000 / 10 000 = 985,00. Прибыль по аморт
 денежный поток повторно. Для полного погашения также можно сразу использовать
 `sell` с фактической ценой погашения.
 
-Строгий `Ledger.open(portfolio)` не допускает отрицательной кассы. Явный режим
-`Ledger.open(portfolio, true)` разрешает маржинальный отрицательный остаток.
+Строгий `Ledger.open(portfolio, policy.chart(), false)` со стандартной policy
+не допускает отрицательного cash. Запрет применяется по каждому счету с ролью
+noNegative, не к агрегату. При пустом noNegative запрета нет, а режим
+`Ledger.open(portfolio, chart, true)` полностью отключает эту проверку.
 Операции могут иметь одинаковую дату, но дата не может быть раньше последней
 примененной даты. Идентификаторы операций и портфеля задает вызывающий код;
-часы и случайные ID не используются. `Ledger.apply` принимает только
-`OperationResult`, созданный `BondOperations`, и возвращает новое состояние.
+часы и случайные ID не используются. `Ledger.apply` принимает `OperationResult`
+и возвращает новое состояние; конструктор результата остается package-private.
+Движок проверяет форму операции, а не происхождение: согласованность генератора
+и валидатора обеспечивает wiring одной policy, а не аутентификация операции.
+
+`cashBalances()` агрегирует spendable, `taxWithheldBalances()` — adjustable.
+`balance(account)` возвращает zero только для известного, scoping-корректного
+отсутствующего счета; неизвестный код или неверное наличие security —
+`IllegalArgumentException`. В `apply` эти нарушения дают `IllegalStateException`,
+в restore — `IllegalArgumentException`, до извлечения security.
+
+Restore сверяет replay истории с balances, позиции с bindings, идентификаторы
+и adjustment-связи, но не доказывает историческую достижимость состояния.
+Даты обходятся по возрастанию, postings одной даты — в сохраненном порядке:
+коррекция раньше исходного withholding-posting, даже внутри одной даты, отвергается.
+`LedgerCommit` запрещает смену chart; CAS сравнивает точный before вместе с chart.
+Первый успешный commit выбирает chart портфеля, не подтверждая его подлинность;
+конкурирующая первая запись получает `LedgerConcurrencyException`.

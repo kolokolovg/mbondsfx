@@ -15,12 +15,13 @@ import ru.onlychill.mbondsfx.core.id.SecurityId;
 import ru.onlychill.mbondsfx.core.money.Money;
 
 /** Immutable persistence boundary for a ledger, including its complete retained posting history. */
-public record LedgerState(PortfolioId portfolio, boolean allowNegativeCash,
+public record LedgerState(PortfolioId portfolio, LedgerChart chart, boolean allowNegativeCash,
                           Map<Account, Money> balances, Map<SecurityId, Position> positions,
                           NavigableMap<LocalDate, List<Posting>> postingsByDate,
                           Set<OperationId> operationIds) {
     public LedgerState {
         Objects.requireNonNull(portfolio, "portfolio");
+        Objects.requireNonNull(chart, "chart");
         balances = immutableMap(balances, "balances");
         positions = immutableMap(positions, "positions");
         postingsByDate = immutableHistory(postingsByDate);

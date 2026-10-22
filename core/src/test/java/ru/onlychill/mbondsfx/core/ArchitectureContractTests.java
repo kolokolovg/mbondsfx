@@ -96,6 +96,63 @@ final class ArchitectureContractTests {
         }
     }
 
+    // DE-N-10: no standard account dictionary or BondAccountingPolicy leaks into engine sources.
+    @Test
+    void doubleEntryDictionaryIsOutsideTheEngine() throws IOException {
+        String sourceDirectory = System.getProperty("coreMainSourceDir");
+        if (sourceDirectory == null || sourceDirectory.isBlank()) {
+            throw new IllegalStateException("Gradle must set coreMainSourceDir for architecture checks");
+        }
+        Path ledger = Path.of(sourceDirectory).resolve("ru/onlychill/mbondsfx/core/ledger");
+        List<String> engineFiles = List.of("Ledger.java", "LedgerState.java", "LedgerChart.java",
+                "Account.java", "Posting.java");
+        List<String> standardCodes = List.of("CASH", "EQUITY", "SECURITIES", "ACCRUED_INTEREST",
+                "COUPON_INCOME", "AMORTIZATION_GAIN", "REALIZED_PNL", "TAX_WITHHELD",
+                "COMMISSION_EXPENSE");
+        for (String file : engineFiles) {
+            String source = Files.readString(ledger.resolve(file));
+            assertFalse(source.contains("BondAccountingPolicy"), file + " does not depend on bond policy");
+            for (String code : standardCodes) {
+                assertFalse(Pattern.compile("AccountCode\\s*\\.\\s*of\\s*\\(\\s*\\\""
+                                + Pattern.quote(code) + "\\\"").matcher(source).find(),
+                        file + " does not hardcode standard account " + code);
+            }
+        }
+
+        String operations = Files.readString(ledger.resolve("BondOperations.java"));
+        assertFalse(Pattern.compile("AccountCode\\s*\\.\\s*of\\s*\\(").matcher(operations).find(),
+                "bond operations do not embed account-code literals");
+        Pattern securityFactory = Pattern.compile("private\\s+Account\\s+account\\s*\\(\\s*Position\\s+position,"
+                + "\\s*AccountCode\\s+code\\s*\\)\\s*\\{\\s*return\\s+new\\s+Account\\("
+                + "position\\.id\\(\\)\\.portfolio\\(\\),\\s*code,\\s*Optional\\.of\\("
+                + "position\\.id\\(\\)\\.security\\(\\)\\),\\s*currencyOf\\(position\\)\\);\\s*\\}");
+        Pattern flatFactory = Pattern.compile("private\\s+static\\s+Account\\s+flat\\s*\\("
+                + "\\s*PortfolioId\\s+portfolio,\\s*Currency\\s+currency,\\s*AccountCode\\s+code\\s*\\)"
+                + "\\s*\\{\\s*return\\s+new\\s+Account\\(portfolio,\\s*code,\\s*Optional\\.empty\\(\\),"
+                + "\\s*currency\\);\\s*\\}");
+        assertTrue(securityFactory.matcher(operations).find(),
+                "security account construction is contained in the policy-code account factory");
+        assertTrue(flatFactory.matcher(operations).find(),
+                "flat account construction is contained in the policy-code flat factory");
+        assertEquals(2, occurrences(operations, "new Account("),
+                "the only BondOperations Account construction sites are those two factories");
+        for (String slot : List.of("cash", "equity", "securities", "accruedInterest", "couponIncome",
+                "amortizationGain", "realizedPnl", "taxWithheld", "commissionExpense")) {
+            assertTrue(operations.contains("policy." + slot + "()"),
+                    "operation account mappings source " + slot + " from BondAccountingPolicy");
+        }
+    }
+
+    private static int occurrences(String source, String sought) {
+        int matches = 0;
+        int offset = 0;
+        while ((offset = source.indexOf(sought, offset)) >= 0) {
+            matches++;
+            offset += sought.length();
+        }
+        return matches;
+    }
+
     private static String firstGroup(Pattern pattern, String contents, Path source, String description) {
         Matcher matcher = pattern.matcher(contents);
         assertTrue(matcher.find(), source + " is missing " + description);

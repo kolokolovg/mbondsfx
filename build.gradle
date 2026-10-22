@@ -1,6 +1,7 @@
 plugins {
     id 'application'
     id 'jacoco'
+    id 'org.cyclonedx.bom' version '3.5.1'
 }
 
 group = 'ru.onlychill'
@@ -8,6 +9,19 @@ version = '1.0-SNAPSHOT'
 
 ext.junitVersion = '5.12.2'
 ext.slf4jVersion = '2.0.20'
+
+// Conservative JaCoCo minimums (COVEREDRATIO) per subproject, a few points below the measured actuals,
+// enforced by jacocoTestCoverageVerification wired into `check`. Root is not listed: its production code is
+// exercised by out-of-process module-path subprocesses that JaCoCo does not instrument.
+def coverageThresholds = [
+        ':core'                : [line: 0.93, branch: 0.82,
+                                  packages: ['ru.onlychill.mbondsfx.core.ledger': [line: 0.90, branch: 0.77]]],
+        ':application'         : [line: 0.88, branch: 0.74, packages: [:]],
+        ':integrations'        : [line: 0.84, branch: 0.75, packages: [:]],
+        ':integrations-moex'   : [line: 0.85, branch: 0.72, packages: [:]],
+        ':integrations-cbr'    : [line: 0.87, branch: 0.68, packages: [:]],
+        ':persistence-memory'  : [line: 0.86, branch: 0.71, packages: [:]],
+]
 
 def aggregateCoverageReport = tasks.register('jacocoAggregateReport',
         org.gradle.testing.jacoco.tasks.JacocoReport) {
@@ -43,6 +57,48 @@ allprojects {
                 html.required = true
                 xml.required = true
                 csv.required = false
+            }
+        }
+
+        def thresholds = coverageThresholds[javaProject.path]
+        if (thresholds != null) {
+            def verificationTask = javaProject.tasks.named('jacocoTestCoverageVerification',
+                    org.gradle.testing.jacoco.tasks.JacocoCoverageVerification)
+            verificationTask.configure {
+                dependsOn(testTask)
+                violationRules {
+                    rule {
+                        limit {
+                            counter = 'LINE'
+                            value = 'COVEREDRATIO'
+                            minimum = thresholds.line
+                        }
+                        limit {
+                            counter = 'BRANCH'
+                            value = 'COVEREDRATIO'
+                            minimum = thresholds.branch
+                        }
+                    }
+                    thresholds.packages.each { packageName, minimums ->
+                        rule {
+                            element = 'PACKAGE'
+                            includes = [packageName]
+                            limit {
+                                counter = 'LINE'
+                                value = 'COVEREDRATIO'
+                                minimum = minimums.line
+                            }
+                            limit {
+                                counter = 'BRANCH'
+                                value = 'COVEREDRATIO'
+                                minimum = minimums.branch
+                            }
+                        }
+                    }
+                }
+            }
+            javaProject.tasks.named('check') {
+                dependsOn(verificationTask)
             }
         }
 
@@ -127,5 +183,19 @@ tasks.named('test', Test) {
     doFirst {
         systemProperty 'projectRoot', rootProject.projectDir.absolutePath
         systemProperty 'installDir', installDistribution.get().destinationDir.absolutePath
+    }
+}
+
+// SBOM (CycloneDX 1.6, JSON+XML) для CI/SCA: ./gradlew cyclonedxBom -> build/reports/cyclonedx/
+// Только runtime-зависимости дистрибутива; тестовые библиотеки в SBOM не попадают.
+cyclonedxBom {
+    projectType = 'application'
+    schemaVersion = org.cyclonedx.Version.VERSION_16
+}
+
+// Production-SBOM: исключаем тестовые и coverage-конфигурации из направлений зависимостей.
+allprojects {
+    tasks.matching { it.name == 'cyclonedxDirectBom' }.configureEach {
+        includeConfigs = ['runtimeClasspath']
     }
 }

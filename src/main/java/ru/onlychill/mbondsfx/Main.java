@@ -92,7 +92,8 @@ public final class Main {
             throw new IllegalStateException("Repository provider '" + repository.id() + "' returned null");
         }
         ProviderSelection<InvestmentAccountRepositoryFactory> investmentAccounts = requireProvider(
-                "investment-account repository", repository.id(), investmentAccountProviders);
+                "investment-account repository", options.investmentRepositoryProvider(),
+                investmentAccountProviders);
         InvestmentAccountRepository investmentAccountRepository =
                 investmentAccounts.provider().createInvestmentAccountRepository(RepositoryConfig.empty());
         if (investmentAccountRepository == null) {
@@ -143,7 +144,8 @@ public final class Main {
     private record ProviderCatalog<T>(Map<String, T> providers, List<String> errors) {
     }
 
-    private record CliOptions(String profile, String bondProvider, String indexProvider, String repositoryProvider) {
+    private record CliOptions(String profile, String bondProvider, String indexProvider, String repositoryProvider,
+            String investmentRepositoryProvider) {
         private static CliOptions parse(String[] args) {
             Map<String, String> options = new HashMap<>();
             for (String argument : args) {
@@ -153,8 +155,8 @@ public final class Main {
                 }
                 String name = argument.substring(0, separator);
                 String value = argument.substring(separator + 1);
-                if (!List.of("--profile", "--bond-provider", "--index-provider", "--repository-provider")
-                        .contains(name)) {
+                if (!List.of("--profile", "--bond-provider", "--index-provider", "--repository-provider",
+                        "--investment-repository-provider").contains(name)) {
                     throw new IllegalArgumentException("Unknown option '" + name + "'");
                 }
                 if (value.isBlank()) {
@@ -169,10 +171,12 @@ public final class Main {
             if (!List.of("all", "moex", "cbr").contains(profile)) {
                 throw new IllegalArgumentException("Invalid profile '" + profile + "' (expected all, moex, or cbr)");
             }
+            String repositoryProvider = options.getOrDefault("--repository-provider", "memory");
             return new CliOptions(profile,
                     options.getOrDefault("--bond-provider", "moex"),
                     options.getOrDefault("--index-provider", "cbr"),
-                    options.getOrDefault("--repository-provider", "memory"));
+                    repositoryProvider,
+                    options.getOrDefault("--investment-repository-provider", repositoryProvider));
         }
 
         private boolean includesBond() {

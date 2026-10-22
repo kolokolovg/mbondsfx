@@ -58,7 +58,7 @@ integration-типы. `IndexValueSourceAdapter` в `integrations.adapter` — я
   остальные типизированные ID — `core.id`.
 - Проводки, позиции и операции учета — `core.ledger`. Не переносите `OperationResult` только
   из-за названия: у него package-private конструктор, связанный с `BondOperations`. Денежные
-  остатки `CASH` и удержания `TAX_WITHHELD` ведутся отдельно по портфелю и валюте; `TAX_WITHHELD`
+  остатки `CASH` и удержания `TAX_WITHHELD` стандартной policy ведутся отдельно по портфелю и валюте; `TAX_WITHHELD`
   не входит в доступный для трат `cashBalances()`; его per-currency read view — `taxWithheldBalances()`.
   Покупки и продажи учитывают явно переданные
   брокерскую и прочую комиссию через `Commissions`/`total()` и отдельную проводку
@@ -66,10 +66,21 @@ integration-типы. `IndexValueSourceAdapter` в `integrations.adapter` — я
   `D TAX_WITHHELD / C CASH`. Не рассчитывайте налог или тариф автоматически.
   `TAX_CORRECTION` — append-only операция с `Posting.adjustsOperation()` на исходную tax-операцию;
   `Ledger.taxWithheldForOperation()` дает ее накопленное удержание, неотрицательное после поправок.
+  Идентичность счета задает `AccountCode`, роли движка — неизменяемый `LedgerChart`.
+  Chart задается явно в `Ledger.open(portfolio, chart, allowNegativeCash)`, хранится в
+  `LedgerState` и заморожен на весь срок жизни ledger; restore не требует внешней конфигурации.
+  `BondAccountingPolicy` — единственный источник словаря bond-счетов; `BondOperations` —
+  instance-генератор с policy. Движок не знает стандартных имен счетов и bond-policy,
+  но сохраняет enum-диспетчеризацию `OperationKind`, включая `TAX_CORRECTION`.
+  Composition root — единственная точка создания policy для сборки приложения: передавайте
+  одну policy генератору и всем accounting-сервисам через конструкторы. Сервисы отвергают
+  snapshot с другим chart по value-equality. Сейчас `Main` accounting-сервисы не создает.
+  Первый успешный CAS фиксирует chart, но не подтверждает его подлинность; движок проверяет
+  структуру операций, не их происхождение. `balance()` отклоняет unknown/scoping как IAE.
 - Use cases и исходящие порты — `application`: `BondReferenceDataSource` и его sparse read-модель,
   порты repository/journal/factory и их контракты; сервис применения операций учета также здесь.
   `InvestmentAccount`, `InvestmentAccountRepository`/factory, подтверждение фактического купона и
-  `TaxCorrectionService` также принадлежат application и не меняют `core.ledger.AccountKind`.
+  `TaxCorrectionService` также принадлежат application и не меняют словарь `core.ledger.AccountCode`.
   `CouponReceiptService` принимает только фактические `gross`, `tax` и `net`; `TaxCorrectionService`
   принимает caller-supplied corrected total и фиксирует delta отдельным CAS-коммитом, не переписывая
   исходный журнал/receipt и не вычисляя налог.
@@ -143,7 +154,20 @@ Gradle обнаруживает установленный JDK 25. Не фикс
 ./gradlew :core:test --tests '*DomainContractTests'
 ./gradlew :test --tests 'ru.onlychill.mbondsfx.ModulePathContractTests'
 ./gradlew jacocoAggregateReport
+./gradlew cyclonedxBom
 ```
+
+`cyclonedxBom` (build-плагин `org.cyclonedx.bom` 3.5.1, Apache-2.0; в production/runtime classpath не попадает)
+создает CycloneDX 1.6 SBOM только по runtime-зависимостям в `build/reports/cyclonedx/bom.{json,xml}`
+для CI/SCA-сканеров.
+
+Mutation testing (PIT, Apache-2.0) одобрен только как build/test-инструмент для `:core`: плагин
+`info.solidsoft.pitest` 1.19.0, PIT 1.30.1 и JUnit 5 plugin 1.2.3 подключены в `core/build.gradle`.
+Запуск вручную: `./gradlew :core:pitest` (отчеты в `core/build/reports/pitest/`). Задача НЕ входит
+в `check`, `build` и основную CI-сборку; порог мутационного скора (`mutationThreshold` в `core/build.gradle`) проверяет сама задача `:core:pitest`; еженедельный запуск
+идет отдельным workflow `.github/workflows/mutation.yml`. Не переносите PIT в production/runtime
+classpath и не добавляйте в другие модули без нового одобрения. Подробности — в
+[docs/verification.md](docs/verification.md).
 
 Проверки используют стандартный Gradle `Test` task с JUnit Jupiter и `useJUnitPlatform()`;
 `check` автоматически включает `test`. HTML/XML reports доступны в
@@ -160,6 +184,9 @@ java/javac subprocesses, запускающие произведенный distr
 создает root HTML/XML отчет в `build/reports/jacoco/jacocoAggregateReport/`. JaCoCo использует
 tool version 0.8.15; root java/javac module-path subprocesses не instrumented и не входят в
 coverage данных отчета.
+`check` каждого подпроекта (кроме root) также запускает `jacocoTestCoverageVerification` с консервативными
+порогами LINE/BRANCH (см. `coverageThresholds` в `build.gradle`; для `:core` дополнительно `core.ledger`);
+root не проверяется, так как его production-код покрывается только out-of-process module-path subprocesses.
 
 ## Версионируемые спецификации учета
 

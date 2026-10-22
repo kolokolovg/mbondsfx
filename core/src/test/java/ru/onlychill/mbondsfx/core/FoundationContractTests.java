@@ -130,6 +130,29 @@ final class FoundationContractTests {
     }
 
     @Test
+    void moneySubtractionRejectsCurrencyMismatchWithItsMessage() {
+        Currency usd = Currency.getInstance("USD");
+        Currency rub = Currency.getInstance("RUB");
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> new Money(BigDecimal.ONE, usd).subtract(new Money(BigDecimal.ONE, rub)));
+        assertEquals("Currency mismatch: USD and RUB", thrown.getMessage(), "subtraction rejects currency mismatch");
+    }
+
+    @Test
+    void dayCountDaysCoverMultiMonthSpansReverseIntervalsAndActActIsda() {
+        assertEquals(60, DayCounts.thirtyE360().days(LocalDate.of(2020, 1, 15), LocalDate.of(2020, 3, 15)),
+                "30E/360 counts two whole months as 60 days");
+        assertEquals(-60, DayCounts.thirtyE360().days(LocalDate.of(2020, 3, 15), LocalDate.of(2020, 1, 15)),
+                "30E/360 reverse interval is signed");
+        assertEquals(100, DayCounts.thirtyE360().days(LocalDate.of(2020, 1, 10), LocalDate.of(2020, 4, 20)),
+                "30E/360 spans three months with day-of-month remainder");
+        assertEquals(366, DayCounts.actActIsda().days(LocalDate.of(2020, 1, 1), LocalDate.of(2021, 1, 1)),
+                "ACT/ACT.ISDA days are actual calendar days");
+        assertEquals(-366, DayCounts.actActIsda().days(LocalDate.of(2021, 1, 1), LocalDate.of(2020, 1, 1)),
+                "ACT/ACT.ISDA days are signed");
+    }
+
+    @Test
     void calendarsAndBusinessDayConventions() {
         BusinessCalendar weekends = HolidayCalendar.weekendsOnly();
         LocalDate friday = LocalDate.of(2024, 6, 14);

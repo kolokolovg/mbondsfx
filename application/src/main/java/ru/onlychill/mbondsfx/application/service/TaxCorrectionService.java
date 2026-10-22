@@ -9,6 +9,7 @@ import ru.onlychill.mbondsfx.application.port.LedgerRepository;
 import ru.onlychill.mbondsfx.application.port.LedgerSnapshot;
 import ru.onlychill.mbondsfx.core.id.OperationId;
 import ru.onlychill.mbondsfx.core.id.PortfolioId;
+import ru.onlychill.mbondsfx.core.ledger.BondAccountingPolicy;
 import ru.onlychill.mbondsfx.core.ledger.BondOperations;
 import ru.onlychill.mbondsfx.core.ledger.Ledger;
 import ru.onlychill.mbondsfx.core.money.Money;
@@ -16,9 +17,13 @@ import ru.onlychill.mbondsfx.core.money.Money;
 /** Appends an explicit correction to the cumulative withholding for an already-posted operation. */
 public final class TaxCorrectionService {
     private final LedgerRepository repository;
+    private final BondAccountingPolicy policy;
+    private final BondOperations operations;
 
-    public TaxCorrectionService(LedgerRepository repository) {
+    public TaxCorrectionService(LedgerRepository repository, BondAccountingPolicy policy) {
         this.repository = Objects.requireNonNull(repository, "repository");
+        this.policy = Objects.requireNonNull(policy, "policy");
+        this.operations = new BondOperations(policy);
     }
 
     /**
@@ -47,6 +52,9 @@ public final class TaxCorrectionService {
         if (allowNegativeCash != snapshot.state().allowNegativeCash()) {
             throw new IllegalStateException("Cash policy differs from the persisted ledger policy");
         }
+        if (!policy.chart().equals(snapshot.state().chart())) {
+            throw new IllegalStateException("Chart differs from the persisted ledger chart");
+        }
 
         Ledger before = Ledger.restore(snapshot.state());
         if (before.operationIds().contains(correctionOperation)) {
@@ -62,7 +70,7 @@ public final class TaxCorrectionService {
             throw new IllegalArgumentException("correctedTotal does not change the recorded withholding");
         }
 
-        var operation = BondOperations.taxCorrection(correctionOperation, correctionDate, portfolio,
+        var operation = operations.taxCorrection(correctionOperation, correctionDate, portfolio,
                 originalOperation, adjustment);
         Ledger after = before.apply(operation);
         return repository.commit(new LedgerCommit(snapshot.version(), before.state(), operation, after.state()));

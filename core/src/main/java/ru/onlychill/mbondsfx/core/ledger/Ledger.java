@@ -22,16 +22,18 @@ import ru.onlychill.mbondsfx.core.money.Money;
 /** Immutable, single-portfolio double-entry ledger. */
 public final class Ledger {
     private final PortfolioId portfolio;
+    private final LedgerChart chart;
     private final boolean allowNegativeCash;
     private final Map<Account, Money> balances;
     private final Map<SecurityId, Position> positions;
     private final NavigableMap<LocalDate, List<Posting>> postingsByDate;
     private final Set<OperationId> operationIds;
 
-    private Ledger(PortfolioId portfolio, boolean allowNegativeCash, Map<Account, Money> balances,
+    private Ledger(PortfolioId portfolio, LedgerChart chart, boolean allowNegativeCash, Map<Account, Money> balances,
                    Map<SecurityId, Position> positions, NavigableMap<LocalDate, List<Posting>> postingsByDate,
                    Set<OperationId> operationIds) {
         this.portfolio = Objects.requireNonNull(portfolio, "portfolio");
+        this.chart = Objects.requireNonNull(chart, "chart");
         this.allowNegativeCash = allowNegativeCash;
         this.balances = Collections.unmodifiableMap(new LinkedHashMap<>(balances));
         this.positions = Collections.unmodifiableMap(new LinkedHashMap<>(positions));
@@ -41,12 +43,9 @@ public final class Ledger {
         this.operationIds = Set.copyOf(operationIds);
     }
 
-    public static Ledger open(PortfolioId portfolio) {
-        return open(portfolio, false);
-    }
-
-    public static Ledger open(PortfolioId portfolio, boolean allowNegativeCash) {
-        return new Ledger(Objects.requireNonNull(portfolio, "portfolio"), allowNegativeCash,
+    public static Ledger open(PortfolioId portfolio, LedgerChart chart, boolean allowNegativeCash) {
+        return new Ledger(Objects.requireNonNull(portfolio, "portfolio"),
+                Objects.requireNonNull(chart, "chart"), allowNegativeCash,
                 Map.of(), Map.of(), new TreeMap<>(), Set.of());
     }
 
@@ -54,7 +53,7 @@ public final class Ledger {
     public static Ledger restore(LedgerState state) {
         Objects.requireNonNull(state, "state");
         validateRestorableState(state);
-        return new Ledger(state.portfolio(), state.allowNegativeCash(), state.balances(), state.positions(),
+        return new Ledger(state.portfolio(), state.chart(), state.allowNegativeCash(), state.balances(), state.positions(),
                 state.postingsByDate(), state.operationIds());
     }
 
@@ -102,8 +101,10 @@ public final class Ledger {
                 if (!portfolio.equals(account.portfolio())) {
                     throw new IllegalStateException("Posting account belongs to a different portfolio");
                 }
-                if (account.kind().requiresSecurity()) {
-                    if (affectedSecurity == null || !account.security().orElseThrow().equals(affectedSecurity)) {
+                validateEntryScoping(account);
+                if (chart.isSecurityScoped(account.code())) {
+                    SecurityId accountSecurity = account.security().orElseThrow();
+                    if (affectedSecurity == null || !accountSecurity.equals(affectedSecurity)) {
                         throw new IllegalStateException("Posting account belongs to a different security");
                     }
                     if (!account.currency().equals(before.carryingAmount().currency())) {
@@ -123,10 +124,10 @@ public final class Ledger {
         if (after != null) {
             nextPositions.put(affectedSecurity, after);
         }
-        validatePositionBalances(nextBalances, nextPositions);
+        validatePositionBalances(nextBalances, nextPositions, chart);
         if (!allowNegativeCash) {
             for (Map.Entry<Account, Money> balance : nextBalances.entrySet()) {
-                if (balance.getKey().kind() == AccountKind.CASH && balance.getValue().isNegative()) {
+                if (chart.isNoNegative(balance.getKey().code()) && balance.getValue().isNegative()) {
                     throw new IllegalStateException("Insufficient cash in " + balance.getKey().currency());
                 }
             }
@@ -138,7 +139,7 @@ public final class Ledger {
         nextPostings.put(result.date(), List.copyOf(datePostings));
         Set<OperationId> nextOperationIds = new HashSet<>(operationIds);
         nextOperationIds.add(result.operation());
-        return new Ledger(portfolio, allowNegativeCash, nextBalances, nextPositions,
+        return new Ledger(portfolio, chart, allowNegativeCash, nextBalances, nextPositions,
                 nextPostings, nextOperationIds);
     }
 
@@ -147,7 +148,12 @@ public final class Ledger {
         if (!portfolio.equals(account.portfolio())) {
             throw new IllegalArgumentException("Account belongs to a different portfolio");
         }
+        validateReadableAccount(account);
         return balances.getOrDefault(account, Money.zero(account.currency()));
+    }
+
+    public LedgerChart chart() {
+        return chart;
     }
 
     public Map<Account, Money> balances() {
@@ -157,7 +163,7 @@ public final class Ledger {
     public Map<Currency, Money> cashBalances() {
         Map<Currency, Money> cash = new LinkedHashMap<>();
         for (Map.Entry<Account, Money> entry : balances.entrySet()) {
-            if (entry.getKey().kind() == AccountKind.CASH) {
+            if (chart.isSpendable(entry.getKey().code())) {
                 cash.merge(entry.getKey().currency(), entry.getValue(), Money::add);
             }
         }
@@ -168,7 +174,7 @@ public final class Ledger {
     public Map<Currency, Money> taxWithheldBalances() {
         Map<Currency, Money> withheld = new LinkedHashMap<>();
         for (Map.Entry<Account, Money> entry : balances.entrySet()) {
-            if (entry.getKey().kind() == AccountKind.TAX_WITHHELD) {
+            if (entry.getKey().code().equals(chart.adjustableCode())) {
                 withheld.merge(entry.getKey().currency(), entry.getValue(), Money::add);
             }
         }
@@ -185,7 +191,7 @@ public final class Ledger {
                 if (posting.operation().equals(originalOperation)) {
                     if (posting.adjustsOperation().isPresent()) {
                         isCorrection = true;
-                    } else if (containsWithheldTax(posting)) {
+                    } else if (containsWithheldTax(posting, chart)) {
                         if (original != null) {
                             throw new IllegalArgumentException("Operation has multiple original withholding postings");
                         }
@@ -201,11 +207,11 @@ public final class Ledger {
             throw new IllegalArgumentException("Operation has no original nonzero withholding: " + originalOperation);
         }
 
-        Money total = validateWithholdingOriginPosting(original, portfolio);
+        Money total = validateWithholdingOriginPosting(original, portfolio, chart);
         for (List<Posting> datedPostings : postingsByDate.values()) {
             for (Posting posting : datedPostings) {
                 if (posting.adjustsOperation().filter(originalOperation::equals).isPresent()) {
-                    Money adjustment = validateTaxCorrectionPosting(posting, portfolio);
+                    Money adjustment = validateTaxCorrectionPosting(posting, portfolio, chart);
                     if (!total.currency().equals(adjustment.currency())) {
                         throw new IllegalArgumentException("Tax correction currency differs from original withholding");
                     }
@@ -235,14 +241,16 @@ public final class Ledger {
 
     /** Returns a defensive immutable snapshot of all state, including retained posting history. */
     public LedgerState state() {
-        return new LedgerState(portfolio, allowNegativeCash, balances, positions, postingsByDate, operationIds);
+        return new LedgerState(portfolio, chart, allowNegativeCash, balances, positions, postingsByDate, operationIds);
     }
 
     private static void validateRestorableState(LedgerState state) {
         PortfolioId portfolio = state.portfolio();
+        LedgerChart chart = state.chart();
         for (Map.Entry<Account, Money> entry : state.balances().entrySet()) {
             Account account = entry.getKey();
             Money amount = entry.getValue();
+            validateRestoredAccount(account, chart);
             if (!portfolio.equals(account.portfolio())) {
                 throw invalidState("Balance account belongs to a different portfolio");
             }
@@ -252,7 +260,7 @@ public final class Ledger {
             if (amount.isZero()) {
                 throw invalidState("Zero balances must be omitted");
             }
-            if (!state.allowNegativeCash() && account.kind() == AccountKind.CASH && amount.isNegative()) {
+            if (!state.allowNegativeCash() && chart.isNoNegative(account.code()) && amount.isNegative()) {
                 throw invalidState("Strict ledger state contains negative cash");
             }
         }
@@ -283,10 +291,11 @@ public final class Ledger {
                 }
                 for (Posting.Entry entry : posting.entries()) {
                     Account account = entry.account();
+                    validateRestoredAccount(account, chart);
                     if (!portfolio.equals(account.portfolio())) {
                         throw invalidState("Posting account belongs to a different portfolio");
                     }
-                    if (account.kind().requiresSecurity()) {
+                    if (chart.isSecurityScoped(account.code())) {
                         SecurityId security = account.security().orElseThrow();
                         Position position = state.positions().get(security);
                         if (position == null
@@ -308,12 +317,12 @@ public final class Ledger {
         if (!operationDates.keySet().equals(state.operationIds())) {
             throw invalidState("Operation IDs do not match posting history");
         }
-        validateTaxCorrectionHistory(state);
+        validateTaxCorrectionHistory(state, chart);
         if (!replayedBalances.equals(state.balances())) {
             throw invalidState("Balances do not equal the retained posting history");
         }
         try {
-            validatePositionBalances(state.balances(), state.positions());
+            validatePositionBalances(state.balances(), state.positions(), chart);
         } catch (IllegalStateException inconsistent) {
             throw new IllegalArgumentException("Invalid ledger state: " + inconsistent.getMessage(), inconsistent);
         }
@@ -341,7 +350,7 @@ public final class Ledger {
         Money adjustment;
         Money current;
         try {
-            adjustment = validateTaxCorrectionPosting(correction, portfolio);
+            adjustment = validateTaxCorrectionPosting(correction, portfolio, chart);
             current = taxWithheldForOperation(originalOperation);
         } catch (IllegalArgumentException invalid) {
             throw new IllegalStateException("Invalid tax correction: " + invalid.getMessage(), invalid);
@@ -363,7 +372,7 @@ public final class Ledger {
         return null;
     }
 
-    private static void validateTaxCorrectionHistory(LedgerState state) {
+    private static void validateTaxCorrectionHistory(LedgerState state, LedgerChart chart) {
         Map<OperationId, List<Posting>> postingsByOperation = new HashMap<>();
         Map<OperationId, Posting> originalTaxPostings = new HashMap<>();
         Set<OperationId> correctionOperations = new HashSet<>();
@@ -373,16 +382,16 @@ public final class Ledger {
                 if (posting.adjustsOperation().isPresent()) {
                     correctionOperations.add(posting.operation());
                     try {
-                        validateTaxCorrectionPosting(posting, state.portfolio());
+                        validateTaxCorrectionPosting(posting, state.portfolio(), chart);
                     } catch (IllegalArgumentException invalid) {
                         throw invalidState("Malformed tax correction posting: " + invalid.getMessage());
                     }
-                } else if (containsWithheldTax(posting)) {
+                } else if (containsWithheldTax(posting, chart)) {
                     if (originalTaxPostings.putIfAbsent(posting.operation(), posting) != null) {
                         throw invalidState("Operation has multiple original withholding postings");
                     }
                     try {
-                        validateWithholdingOriginPosting(posting, state.portfolio());
+                        validateWithholdingOriginPosting(posting, state.portfolio(), chart);
                     } catch (IllegalArgumentException invalid) {
                         throw invalidState("Malformed original withholding posting: " + invalid.getMessage());
                     }
@@ -409,7 +418,7 @@ public final class Ledger {
                     if (originalTax == null) {
                         throw invalidState("Tax correction references a missing or later original withholding posting");
                     }
-                    Money adjustment = validateTaxCorrectionPosting(posting, state.portfolio());
+                    Money adjustment = validateTaxCorrectionPosting(posting, state.portfolio(), chart);
                     if (!originalTax.currency().equals(adjustment.currency())) {
                         throw invalidState("Tax correction currency differs from original withholding");
                     }
@@ -420,42 +429,46 @@ public final class Ledger {
                     cumulativeWithholding.put(originalOperation, corrected);
                 } else if (originalTaxPostings.get(posting.operation()) == posting) {
                     // Validate only the identified withholding posting, not its operation's base postings.
-                    Money originalTax = validateWithholdingOriginPosting(posting, state.portfolio());
+                    Money originalTax = validateWithholdingOriginPosting(posting, state.portfolio(), chart);
                     cumulativeWithholding.put(posting.operation(), originalTax);
                 }
             }
         }
     }
 
-    private static boolean containsWithheldTax(Posting posting) {
-        return posting.entries().stream().anyMatch(entry -> entry.account().kind() == AccountKind.TAX_WITHHELD);
+    private static boolean containsWithheldTax(Posting posting, LedgerChart chart) {
+        return posting.entries().stream()
+                .anyMatch(entry -> entry.account().code().equals(chart.adjustableCode()));
     }
 
-    private static Money validateWithholdingOriginPosting(Posting posting, PortfolioId portfolio) {
+    private static Money validateWithholdingOriginPosting(
+            Posting posting, PortfolioId portfolio, LedgerChart chart) {
         if (posting.adjustsOperation().isPresent()) {
             throw new IllegalArgumentException("Original withholding posting must not link to another operation");
         }
-        Money amount = validateTaxTransferPosting(posting, portfolio);
+        Money amount = validateTaxTransferPosting(posting, portfolio, chart);
         if (!amount.isPositive()) {
             throw new IllegalArgumentException("Original withholding amount must be positive");
         }
         return amount;
     }
 
-    private static Money validateTaxCorrectionPosting(Posting posting, PortfolioId portfolio) {
+    private static Money validateTaxCorrectionPosting(
+            Posting posting, PortfolioId portfolio, LedgerChart chart) {
         OperationId original = posting.adjustsOperation().orElseThrow(
                 () -> new IllegalArgumentException("Correction posting has no adjusted operation"));
         if (posting.operation().equals(original)) {
             throw new IllegalArgumentException("Tax correction cannot adjust itself");
         }
-        Money amount = validateTaxTransferPosting(posting, portfolio);
+        Money amount = validateTaxTransferPosting(posting, portfolio, chart);
         if (amount.isZero()) {
             throw new IllegalArgumentException("Tax correction amount must not be zero");
         }
         return amount;
     }
 
-    private static Money validateTaxTransferPosting(Posting posting, PortfolioId portfolio) {
+    private static Money validateTaxTransferPosting(
+            Posting posting, PortfolioId portfolio, LedgerChart chart) {
         if (posting.entries().size() != 2) {
             throw new IllegalArgumentException("Tax transfer posting must contain exactly two entries");
         }
@@ -466,9 +479,10 @@ public final class Ledger {
             if (!portfolio.equals(account.portfolio())) {
                 throw new IllegalArgumentException("Tax transfer belongs to a different portfolio");
             }
-            if (account.kind() == AccountKind.TAX_WITHHELD && taxEntry == null) {
+            if (account.code().equals(chart.adjustableCode()) && account.security().isEmpty() && taxEntry == null) {
                 taxEntry = entry;
-            } else if (account.kind() == AccountKind.CASH && cashEntry == null) {
+            } else if (account.code().equals(chart.adjustmentCounterpartCode())
+                    && account.security().isEmpty() && cashEntry == null) {
                 cashEntry = entry;
             } else {
                 throw new IllegalArgumentException("Tax transfer must contain one withheld-tax and one cash entry");
@@ -483,18 +497,25 @@ public final class Ledger {
     }
 
     private static void validatePositionBalances(Map<Account, Money> balances,
-                                                 Map<SecurityId, Position> positions) {
+                                                 Map<SecurityId, Position> positions,
+                                                 LedgerChart chart) {
         for (Map.Entry<SecurityId, Position> entry : positions.entrySet()) {
             Position position = entry.getValue();
-            Money carrying = securityBalance(balances, position, AccountKind.SECURITIES);
-            Money accrued = securityBalance(balances, position, AccountKind.ACCRUED_INTEREST);
-            if (!carrying.equals(position.carryingAmount()) || !accrued.equals(position.purchasedAccrued())) {
-                throw new IllegalStateException("Position assets disagree with ledger balances for " + entry.getKey());
+            for (Map.Entry<AccountCode, PositionMeasure> binding : chart.positionBindings().entrySet()) {
+                Money expected = switch (binding.getValue()) {
+                    case CARRYING -> position.carryingAmount();
+                    case PURCHASED_ACCRUED -> position.purchasedAccrued();
+                };
+                Money actual = securityBalance(balances, position, binding.getKey());
+                if (!actual.equals(expected)) {
+                    throw new IllegalStateException("Position assets disagree with ledger balances for "
+                            + entry.getKey());
+                }
             }
         }
         for (Map.Entry<Account, Money> entry : balances.entrySet()) {
             Account account = entry.getKey();
-            if (account.kind().requiresSecurity()) {
+            if (chart.isSecurityScoped(account.code())) {
                 Position position = positions.get(account.security().orElseThrow());
                 if (position == null || !position.carryingAmount().currency().equals(account.currency())) {
                     throw new IllegalStateException("Security asset account has no matching position");
@@ -503,9 +524,36 @@ public final class Ledger {
         }
     }
 
-    private static Money securityBalance(Map<Account, Money> balances, Position position, AccountKind kind) {
-        Account account = new Account(position.id().portfolio(), kind,
+    private static Money securityBalance(Map<Account, Money> balances, Position position, AccountCode code) {
+        Account account = new Account(position.id().portfolio(), code,
                 Optional.of(position.id().security()), position.carryingAmount().currency());
         return balances.getOrDefault(account, Money.zero(position.carryingAmount().currency()));
+    }
+
+    private void validateEntryScoping(Account account) {
+        if (!chart.isKnown(account.code())) {
+            throw new IllegalStateException("Unknown account code " + account.code().value());
+        }
+        if (account.security().isPresent() != chart.isSecurityScoped(account.code())) {
+            throw new IllegalStateException("Account security scoping differs from chart");
+        }
+    }
+
+    private void validateReadableAccount(Account account) {
+        if (!chart.isKnown(account.code())) {
+            throw new IllegalArgumentException("Unknown account code " + account.code().value());
+        }
+        if (account.security().isPresent() != chart.isSecurityScoped(account.code())) {
+            throw new IllegalArgumentException("Account security scoping differs from chart");
+        }
+    }
+
+    private static void validateRestoredAccount(Account account, LedgerChart chart) {
+        if (!chart.isKnown(account.code())) {
+            throw invalidState("Unknown account code " + account.code().value());
+        }
+        if (account.security().isPresent() != chart.isSecurityScoped(account.code())) {
+            throw invalidState("Account security scoping differs from chart");
+        }
     }
 }

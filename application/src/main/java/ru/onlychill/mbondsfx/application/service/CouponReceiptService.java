@@ -9,6 +9,7 @@ import ru.onlychill.mbondsfx.application.port.LedgerRepository;
 import ru.onlychill.mbondsfx.application.port.LedgerSnapshot;
 import ru.onlychill.mbondsfx.core.id.OperationId;
 import ru.onlychill.mbondsfx.core.id.PositionId;
+import ru.onlychill.mbondsfx.core.ledger.BondAccountingPolicy;
 import ru.onlychill.mbondsfx.core.ledger.BondOperations;
 import ru.onlychill.mbondsfx.core.ledger.Position;
 import ru.onlychill.mbondsfx.core.money.Money;
@@ -18,11 +19,15 @@ public final class CouponReceiptService {
     private final InvestmentAccountRepository accounts;
     private final LedgerRepository ledgers;
     private final LedgerApplicationService ledgerService;
+    private final BondOperations operations;
 
-    public CouponReceiptService(InvestmentAccountRepository accounts, LedgerRepository ledgers) {
+    public CouponReceiptService(InvestmentAccountRepository accounts, LedgerRepository ledgers,
+                                BondAccountingPolicy policy) {
         this.accounts = Objects.requireNonNull(accounts, "accounts");
         this.ledgers = Objects.requireNonNull(ledgers, "ledgers");
-        this.ledgerService = new LedgerApplicationService(ledgers);
+        Objects.requireNonNull(policy, "policy");
+        this.ledgerService = new LedgerApplicationService(ledgers, policy);
+        this.operations = new BondOperations(policy);
     }
 
     /** All three amounts are mandatory known facts, including an explicitly known zero tax. */
@@ -65,7 +70,7 @@ public final class CouponReceiptService {
             throw new IllegalArgumentException("Position does not match the current portfolio ledger");
         }
 
-        var operationResult = BondOperations.coupon(operation, actualDate, position, grossTotal,
+        var operationResult = operations.coupon(operation, actualDate, position, grossTotal,
                 Optional.of(taxWithheldTotal));
         LedgerSnapshot committed = ledgerService.apply(account.portfolio(), allowNegativeCash, operationResult);
         return new CouponReceipt(account, position.id(), operation, actualDate, grossTotal,

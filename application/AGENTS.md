@@ -12,11 +12,15 @@ Gradle `test` task.
 
 - `application.port.BondReferenceDataSource` — минимальный sparse-контракт; сохраняйте только
   явно сообщённые факты и их source ID/единицы. Не создавайте из них `BondDefinition`.
-- `LedgerRepository.commit` — атомарный CAS snapshot+journal contract; сервис строит переход только
-  через `Ledger.apply`, передаёт явные portfolio/policy/operation и никогда не повторяет конфликт
-  автоматически.
+- `LedgerRepository.commit` — атомарный CAS snapshot+journal contract; `LedgerCommit` явно проверяет
+  value-равенство chart до/после; сервис строит переход только через `Ledger.apply`, передаёт явные
+  portfolio/policy/operation и никогда не повторяет конфликт автоматически.
+- `LedgerApplicationService`, `TaxCorrectionService` и `CouponReceiptService` получают одну
+  `BondAccountingPolicy` через constructor injection. Ledger открывается с `policy.chart()`, а
+  загруженный chart сверяется с ним по value до применения операции; `BondOperations` — instance,
+  настроенный той же policy. Не передавайте chart или policy per-call.
 - Инвестиционные счета и их `InvestmentAccountRepository`/`InvestmentAccountRepositoryFactory` —
-  отдельные от `core.ledger.AccountKind` application-контракты. Отсутствие записи означает unknown;
+  отдельные от кодов/ролей `core.ledger` application-контракты. Отсутствие записи означает unknown;
   не выводите BROKERAGE как значение по умолчанию. `CouponReceiptService` принимает только три
   известные суммы фактического получения и записывает операцию через `BondOperations.coupon` и
   `LedgerApplicationService`; купонное расписание не является проводкой.

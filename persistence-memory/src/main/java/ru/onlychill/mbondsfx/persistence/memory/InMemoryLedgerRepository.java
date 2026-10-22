@@ -76,7 +76,8 @@ final class InMemoryLedgerRepository implements LedgerRepository {
             }
 
             LedgerState actualBefore = store.snapshot == null
-                    ? Ledger.open(commit.portfolio(), commit.before().allowNegativeCash()).state()
+                    ? Ledger.open(commit.portfolio(), commit.before().chart(),
+                            commit.before().allowNegativeCash()).state()
                     : store.snapshot.state();
             if (!actualBefore.equals(commit.before())) {
                 throw new LedgerConcurrencyException(commit.portfolio(), commit.expectedVersion(), actualVersion);

@@ -26,8 +26,9 @@ public final class MoexBondAdapter implements MarketDataPort {
     private static final URI DEFAULT_BASE_URI = URI.create("http://iss.moex.com/iss");
     private static final Pattern SECID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final int PAGE_SIZE = 20;
-    private static final int MAX_PAGES_PER_BLOCK = 1_000;
+    /** Row budget per schedule block; the page budget is derived from it so the two cannot drift apart. */
     private static final int MAX_ROWS_PER_BLOCK = 20_000;
+    private static final int MAX_PAGES_PER_BLOCK = MAX_ROWS_PER_BLOCK / PAGE_SIZE;
     private static final List<String> SCHEDULE_BLOCKS = List.of("coupons", "amortizations", "offers");
 
     private final Transport transport;
@@ -111,7 +112,8 @@ public final class MoexBondAdapter implements MarketDataPort {
         int pages = 0;
         while (true) {
             if (pages >= MAX_PAGES_PER_BLOCK) {
-                throw new IllegalStateException("MOEX " + block + " exceeded maximum page count");
+                throw new IllegalStateException("MOEX " + block + " exceeded maximum page count of "
+                        + MAX_PAGES_PER_BLOCK);
             }
             URI pageUri = uri("/securities/" + secid + "/bondization.xml?iss.meta=off&iss.only="
                     + block + "&limit=" + PAGE_SIZE + "&start=" + offset);
@@ -128,8 +130,9 @@ public final class MoexBondAdapter implements MarketDataPort {
             if (!seenPages.add(pageSignature)) {
                 throw new IllegalStateException("MOEX repeated " + block + " page at offset " + offset);
             }
-            if (pageRows.size() > MAX_ROWS_PER_BLOCK - allRows.size()) {
-                throw new IllegalStateException("MOEX " + block + " exceeded maximum row count");
+            if (allRows.size() + pageRows.size() > MAX_ROWS_PER_BLOCK) {
+                throw new IllegalStateException("MOEX " + block + " exceeded maximum row count of "
+                        + MAX_ROWS_PER_BLOCK);
             }
             allRows.addAll(pageRows);
             try {

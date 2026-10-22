@@ -3,6 +3,7 @@ package ru.onlychill.mbondsfx.application;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.Currency;
 import java.util.List;
 import java.util.Map;
@@ -21,6 +22,8 @@ import ru.onlychill.mbondsfx.application.service.LedgerApplicationService;
 import ru.onlychill.mbondsfx.core.id.OperationId;
 import ru.onlychill.mbondsfx.core.id.PortfolioId;
 import ru.onlychill.mbondsfx.core.id.SecurityId;
+import ru.onlychill.mbondsfx.core.ledger.AccountCode;
+import ru.onlychill.mbondsfx.core.ledger.BondAccountingPolicy;
 import ru.onlychill.mbondsfx.core.ledger.BondOperations;
 import ru.onlychill.mbondsfx.core.ledger.Ledger;
 import ru.onlychill.mbondsfx.core.ledger.LedgerState;
@@ -35,6 +38,8 @@ class ApplicationContractTests {
     private static final Currency RUB = Currency.getInstance("RUB");
     private static final PortfolioId PORTFOLIO = new PortfolioId("application-contract");
     private static final LocalDate DATE = LocalDate.of(2026, 10, 20);
+    private static final BondAccountingPolicy POLICY = BondAccountingPolicy.standard();
+    private static final BondOperations OPERATIONS = new BondOperations(POLICY);
 
     @Test
     void referenceDataPortIsSparseAndImmutable() {
@@ -63,25 +68,25 @@ class ApplicationContractTests {
     @Test
     void serviceForwardsVersionedAppliedTransitions() {
         InMemoryContractRepository repository = new InMemoryContractRepository();
-        LedgerApplicationService service = new LedgerApplicationService(repository);
-        OperationResult opening = BondOperations.opening(id("app-open"), DATE, PORTFOLIO, RUB, money("100"));
+        LedgerApplicationService service = new LedgerApplicationService(repository, POLICY);
+        OperationResult opening = OPERATIONS.opening(id("app-open"), DATE, PORTFOLIO, RUB, money("100"));
 
         LedgerSnapshot first = service.apply(PORTFOLIO, false, opening);
         LedgerCommit firstCommit = repository.lastCommit;
         assertEquals(1, first.version(), "first commit initializes version");
         assertEquals(1, first.lastSequence(), "first commit initializes sequence");
         assertEquals(0, firstCommit.expectedVersion(), "initial commit uses explicit absent version zero");
-        assertEquals(Ledger.open(PORTFOLIO, false).state(), firstCommit.before(),
+        assertEquals(Ledger.open(PORTFOLIO, POLICY.chart(), false).state(), firstCommit.before(),
                 "initial commit uses an explicit empty ledger with supplied cash policy");
-        assertEquals(Ledger.open(PORTFOLIO, false).apply(opening).state(), firstCommit.after(),
+        assertEquals(Ledger.open(PORTFOLIO, POLICY.chart(), false).apply(opening).state(), firstCommit.after(),
                 "service forwards the exact operation-derived after-state");
 
-        OperationResult deposit = BondOperations.deposit(id("app-deposit"), DATE, PORTFOLIO, RUB, money("25"));
+        OperationResult deposit = OPERATIONS.deposit(id("app-deposit"), DATE, PORTFOLIO, RUB, money("25"));
         LedgerSnapshot second = service.apply(PORTFOLIO, false, deposit);
         assertEquals(1, repository.lastCommit.expectedVersion(), "next operation uses the loaded expected version");
         assertEquals(2, second.version(), "next operation increments the version");
         assertEquals(2, second.lastSequence(), "per-portfolio sequence increases once per accepted operation");
-        assertEquals(Ledger.open(PORTFOLIO, false).apply(opening).apply(deposit).state(), second.state(),
+        assertEquals(Ledger.open(PORTFOLIO, POLICY.chart(), false).apply(opening).apply(deposit).state(), second.state(),
                 "service result equals direct immutable domain application");
         List<OperationRecord> journal = repository.operations(PORTFOLIO);
         assertEquals(2, journal.size(), "journal contains both operations");
@@ -95,8 +100,8 @@ class ApplicationContractTests {
     @Test
     void serviceRejectsDuplicateBeforeCommit() {
         InMemoryContractRepository repository = new InMemoryContractRepository();
-        LedgerApplicationService service = new LedgerApplicationService(repository);
-        OperationResult opening = BondOperations.opening(id("app-duplicate"), DATE, PORTFOLIO, RUB, money("100"));
+        LedgerApplicationService service = new LedgerApplicationService(repository, POLICY);
+        OperationResult opening = OPERATIONS.opening(id("app-duplicate"), DATE, PORTFOLIO, RUB, money("100"));
         service.apply(PORTFOLIO, false, opening);
         int commitsBeforeDuplicate = repository.commitCalls;
         assertThrows(DuplicateOperationException.class, () -> service.apply(PORTFOLIO, false, opening),
@@ -107,13 +112,13 @@ class ApplicationContractTests {
     @Test
     void serviceRejectsPersistedPolicyChangeWithoutCommit() {
         InMemoryContractRepository repository = new InMemoryContractRepository();
-        LedgerApplicationService service = new LedgerApplicationService(repository);
-        OperationResult opening = BondOperations.opening(id("app-policy-open"), DATE, PORTFOLIO, RUB, money("100"));
+        LedgerApplicationService service = new LedgerApplicationService(repository, POLICY);
+        OperationResult opening = OPERATIONS.opening(id("app-policy-open"), DATE, PORTFOLIO, RUB, money("100"));
         LedgerSnapshot snapshot = service.apply(PORTFOLIO, false, opening);
         int commitsBeforePolicyMismatch = repository.commitCalls;
         assertThrows(IllegalStateException.class,
                 () -> service.apply(PORTFOLIO, true,
-                        BondOperations.deposit(id("policy-mismatch"), DATE.plusDays(1), PORTFOLIO, RUB, money("1"))),
+                        OPERATIONS.deposit(id("policy-mismatch"), DATE.plusDays(1), PORTFOLIO, RUB, money("1"))),
                 "service never silently changes persisted cash policy");
         assertEquals(commitsBeforePolicyMismatch, repository.commitCalls,
                 "policy mismatch does not attempt a commit");
@@ -121,11 +126,26 @@ class ApplicationContractTests {
     }
 
     @Test
+    void deN07_serviceRejectsPersistedChartDriftByValueBeforeCommit() {
+        InMemoryContractRepository repository = new InMemoryContractRepository();
+        BondAccountingPolicy otherPolicy = policyWithCashCode("AVAILABLE_CASH");
+        repository.snapshot = Optional.of(new LedgerSnapshot(PORTFOLIO, 1, 1,
+                Ledger.open(PORTFOLIO, otherPolicy.chart(), false).state()));
+        LedgerApplicationService service = new LedgerApplicationService(repository, POLICY);
+        int commitsBeforeDrift = repository.commitCalls;
+
+        assertThrows(IllegalStateException.class, () -> service.apply(PORTFOLIO, false,
+                        OPERATIONS.deposit(id("chart-drift"), DATE, PORTFOLIO, RUB, money("1"))),
+                "service rejects a persisted chart that differs from the configured policy");
+        assertEquals(commitsBeforeDrift, repository.commitCalls, "chart drift is rejected before commit");
+    }
+
+    @Test
     void repositoryCommitFailureDoesNotMutateRepository() {
         InMemoryContractRepository commitFailureRepository = new InMemoryContractRepository();
         commitFailureRepository.failNextCommit = true;
-        LedgerApplicationService commitFailureService = new LedgerApplicationService(commitFailureRepository);
-        OperationResult opening = BondOperations.opening(id("failed-open"), DATE, PORTFOLIO, RUB, money("10"));
+        LedgerApplicationService commitFailureService = new LedgerApplicationService(commitFailureRepository, POLICY);
+        OperationResult opening = OPERATIONS.opening(id("failed-open"), DATE, PORTFOLIO, RUB, money("10"));
         assertThrows(IllegalStateException.class,
                 () -> commitFailureService.apply(PORTFOLIO, false, opening), "repository commit failure propagates");
         assertTrue(commitFailureRepository.snapshot.isEmpty(), "failed atomic commit leaves repository state unchanged");
@@ -136,8 +156,8 @@ class ApplicationContractTests {
     @Test
     void domainApplyFailureDoesNotCommit() {
         InMemoryContractRepository applyFailureRepository = new InMemoryContractRepository();
-        LedgerApplicationService applyFailureService = new LedgerApplicationService(applyFailureRepository);
-        OperationResult overdraft = BondOperations.withdrawal(id("failed-withdrawal"), DATE,
+        LedgerApplicationService applyFailureService = new LedgerApplicationService(applyFailureRepository, POLICY);
+        OperationResult overdraft = OPERATIONS.withdrawal(id("failed-withdrawal"), DATE,
                 PORTFOLIO, RUB, money("10"));
         assertThrows(IllegalStateException.class,
                 () -> applyFailureService.apply(PORTFOLIO, false, overdraft),
@@ -147,29 +167,41 @@ class ApplicationContractTests {
     }
 
     @Test
-    void commitRejectsUnappliedReplacementState() {
-        LedgerState empty = Ledger.open(PORTFOLIO, false).state();
-        OperationResult opening = BondOperations.opening(id("commit-open"), DATE, PORTFOLIO, RUB, money("10"));
+    void deN08_commitRejectsChartChangesAndUnappliedReplacementState() {
+        LedgerState empty = Ledger.open(PORTFOLIO, POLICY.chart(), false).state();
+        OperationResult opening = OPERATIONS.opening(id("commit-open"), DATE, PORTFOLIO, RUB, money("10"));
         assertThrows(IllegalArgumentException.class,
                 () -> new LedgerCommit(0, empty, opening, empty),
                 "commit cannot inject an unrelated after-state");
-        Ledger populated = Ledger.open(PORTFOLIO, false).apply(opening);
+        Ledger populated = Ledger.open(PORTFOLIO, POLICY.chart(), false).apply(opening);
         assertThrows(IllegalArgumentException.class,
                 () -> new LedgerCommit(0, populated.state(),
-                        BondOperations.deposit(id("commit-deposit"), DATE.plusDays(1), PORTFOLIO, RUB, money("1")),
+                        OPERATIONS.deposit(id("commit-deposit"), DATE.plusDays(1), PORTFOLIO, RUB, money("1")),
                         populated.state()),
                 "version zero cannot initialize from a nonempty ledger");
+
+        BondAccountingPolicy otherPolicy = policyWithCashCode("AVAILABLE_CASH");
+        LedgerState otherEmpty = Ledger.open(PORTFOLIO, otherPolicy.chart(), false).state();
+        LedgerState policyAfter = Ledger.open(PORTFOLIO, POLICY.chart(), false).apply(opening).state();
+        assertThrows(IllegalArgumentException.class,
+                () -> new LedgerCommit(0, otherEmpty, opening, policyAfter),
+                "commit explicitly rejects chart changes before transition revalidation");
+
+        BondAccountingPolicy equalPolicy = policyWithCashCode(POLICY.cash().value());
+        LedgerState equalPolicyAfter = Ledger.open(PORTFOLIO, equalPolicy.chart(), false).apply(opening).state();
+        assertEquals(equalPolicyAfter, new LedgerCommit(0, empty, opening, equalPolicyAfter).after(),
+                "commit accepts value-equal charts created independently");
     }
 
     @Test
     void repositoryContractsAreTypedAndConfigIsImmutable() {
         assertThrows(IllegalArgumentException.class, () -> new LedgerSnapshot(PORTFOLIO, 0, 0,
-                Ledger.open(PORTFOLIO, false).state()), "empty portfolio is represented by Optional.empty");
+                Ledger.open(PORTFOLIO, POLICY.chart(), false).state()), "empty portfolio is represented by Optional.empty");
         assertEquals(5, new LedgerConcurrencyException(PORTFOLIO, 4, 5).actualVersion(),
                 "version conflict exposes actual version");
         assertEquals(id("duplicate"), new DuplicateOperationException(PORTFOLIO, id("duplicate")).operation(),
                 "duplicate operation has a typed identity");
-        Map<String, String> settings = new java.util.LinkedHashMap<>();
+        Map<String, String> settings = new LinkedHashMap<>();
         settings.put("path", "data.db");
         RepositoryConfig config = new RepositoryConfig(settings);
         settings.clear();
@@ -180,6 +212,12 @@ class ApplicationContractTests {
 
     private static OperationId id(String value) { return new OperationId(value); }
     private static Money money(String amount) { return new Money(new BigDecimal(amount), RUB); }
+
+    private static BondAccountingPolicy policyWithCashCode(String cashCode) {
+        return new BondAccountingPolicy(new AccountCode(cashCode),
+                POLICY.equity(), POLICY.securities(), POLICY.accruedInterest(), POLICY.couponIncome(),
+                POLICY.amortizationGain(), POLICY.realizedPnl(), POLICY.taxWithheld(), POLICY.commissionExpense());
+    }
 
     private static final class InMemoryContractRepository implements LedgerRepository {
         private Optional<LedgerSnapshot> snapshot = Optional.empty();
@@ -223,7 +261,7 @@ class ApplicationContractTests {
                 if (current.state().operationIds().contains(commit.operation().operation())) {
                     throw new DuplicateOperationException(commit.portfolio(), commit.operation().operation());
                 }
-            } else if (!commit.before().equals(Ledger.open(commit.portfolio(),
+            } else if (!commit.before().equals(Ledger.open(commit.portfolio(), commit.before().chart(),
                     commit.before().allowNegativeCash()).state())) {
                 throw new IllegalArgumentException("First commit must start from an empty state");
             }

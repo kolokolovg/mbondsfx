@@ -29,8 +29,10 @@ selected provider capabilities and in-memory repository but does not fetch data:
 # profile=moex bond=moex index=none repository=memory
 ```
 
-`--bond-provider=`, `--index-provider=`, and `--repository-provider=` explicitly select IDs; defaults
-are `moex`, `cbr`, and `memory`. IDs are provider-owned and duplicate or missing selected IDs fail with
+`--bond-provider=`, `--index-provider=`, `--repository-provider=`, and
+`--investment-repository-provider=` explicitly select IDs; defaults are `moex`, `cbr`, and `memory`.
+`--investment-repository-provider` defaults to the value of `--repository-provider`, so omitting it keeps
+both repositories on the same provider ID. IDs are provider-owned and duplicate or missing selected IDs fail with
 a diagnostic. Direct adapter constructors and raw MOEX rows remain internal to their provider modules.
 
 ## Передача внешних фиксаций в расчеты `:core`

@@ -18,7 +18,9 @@ import ru.onlychill.mbondsfx.core.id.PortfolioId;
 import ru.onlychill.mbondsfx.core.id.PositionId;
 import ru.onlychill.mbondsfx.core.id.SecurityId;
 import ru.onlychill.mbondsfx.core.ledger.Account;
-import ru.onlychill.mbondsfx.core.ledger.AccountKind;
+import ru.onlychill.mbondsfx.core.ledger.AccountCode;
+import ru.onlychill.mbondsfx.core.ledger.BondAccountingPolicy;
+import ru.onlychill.mbondsfx.core.ledger.LedgerChart;
 import ru.onlychill.mbondsfx.core.ledger.BondOperations;
 import ru.onlychill.mbondsfx.core.ledger.Commissions;
 import ru.onlychill.mbondsfx.core.ledger.Ledger;
@@ -40,48 +42,56 @@ final class LedgerContractTests {
     private static final PortfolioId PF = new PortfolioId("portfolio-1");
     private static final SecurityId SEC = new SecurityId("SU0000000001");
     private static final LocalDate DAY1 = LocalDate.of(2026, 1, 1);
+    private static final BondAccountingPolicy POLICY = BondAccountingPolicy.standard();
+    private static final LedgerChart CHART = POLICY.chart();
+    private static final BondOperations OPS = POLICY.operations();
 
+    // DE-P-03..05: exact opening/deposit/withdrawal postings and both negative-cash policies.
     @Test
     void openingDepositWithdrawalAndCashConstraints() {
-        Ledger ledger = Ledger.open(PF);
-        OperationResult opening = BondOperations.opening(id("open"), DAY1, PF, RUB, m("10000"));
+        Ledger ledger = Ledger.open(PF, CHART, false);
+        OperationResult opening = OPS.opening(id("open"), DAY1, PF, RUB, m("10000"));
         assertEntries(opening.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, RUB, "10000"),
-                entry(PF, AccountKind.EQUITY, null, RUB, "-10000"));
+                entry(PF, POLICY.cash(), null, RUB, "10000"),
+                entry(PF, POLICY.equity(), null, RUB, "-10000"));
         ledger = ledger.apply(opening);
-        OperationResult deposit = BondOperations.deposit(id("deposit"), DAY1, PF, RUB, m("500"));
+        OperationResult deposit = OPS.deposit(id("deposit"), DAY1, PF, RUB, m("500"));
+        assertEntries(deposit.postings().getFirst(),
+                entry(PF, POLICY.cash(), null, RUB, "500"),
+                entry(PF, POLICY.equity(), null, RUB, "-500"));
         ledger = ledger.apply(deposit);
-        OperationResult withdrawal = BondOperations.withdrawal(id("withdraw"), DAY1, PF, RUB, m("2000"));
+        OperationResult withdrawal = OPS.withdrawal(id("withdraw"), DAY1, PF, RUB, m("2000"));
         assertEntries(withdrawal.postings().getFirst(),
-                entry(PF, AccountKind.EQUITY, null, RUB, "2000"),
-                entry(PF, AccountKind.CASH, null, RUB, "-2000"));
+                entry(PF, POLICY.equity(), null, RUB, "2000"),
+                entry(PF, POLICY.cash(), null, RUB, "-2000"));
         ledger = ledger.apply(withdrawal);
-        assertEquals(m("8500"), ledger.balance(account(AccountKind.CASH, null, RUB)),
+        assertEquals(m("8500"), ledger.balance(account(POLICY.cash(), null, RUB)),
                 "opening/deposit/withdrawal cash total");
-        assertEquals(m("-8500"), ledger.balance(account(AccountKind.EQUITY, null, RUB)),
+        assertEquals(m("-8500"), ledger.balance(account(POLICY.equity(), null, RUB)),
                 "equity is the counter-account");
 
         assertThrows(IllegalStateException.class,
-                () -> Ledger.open(PF).apply(BondOperations.withdrawal(id("no-cash"), DAY1, PF, RUB, m("1"))),
+                () -> Ledger.open(PF, CHART, false).apply(OPS.withdrawal(id("no-cash"), DAY1, PF, RUB, m("1"))),
                 "strict ledger rejects a withdrawal into negative cash");
-        Ledger margin = Ledger.open(PF, true).apply(
-                BondOperations.withdrawal(id("margin"), DAY1, PF, RUB, m("2000")));
+        Ledger margin = Ledger.open(PF, CHART, true).apply(
+                OPS.withdrawal(id("margin"), DAY1, PF, RUB, m("2000")));
         assertEquals(m("-2000"), margin.cashBalances().get(RUB), "explicit margin allows negative cash");
     }
 
+    // DE-P-06..09: exact buy/coupon/amortization/sell entries, fee/tax postings, and position snapshots.
     @Test
     void dirtyPurchaseCouponAmortizationAndRedemption() {
-        Ledger ledger = Ledger.open(PF).apply(BondOperations.opening(id("fund"), DAY1, PF, RUB, m("20000")));
+        Ledger ledger = Ledger.open(PF, CHART, false).apply(OPS.opening(id("fund"), DAY1, PF, RUB, m("20000")));
         Position empty = Position.empty(positionId(), RUB);
-        OperationResult purchase = BondOperations.buy(id("buy"), DAY1.plusDays(1), empty, 10,
+        OperationResult purchase = OPS.buy(id("buy"), DAY1.plusDays(1), empty, 10,
                 m("985"), m("15.20"), m("1000"), m("50"));
         assertEntries(purchase.postings().getFirst(),
-                entry(PF, AccountKind.SECURITIES, SEC, RUB, "9850"),
-                entry(PF, AccountKind.ACCRUED_INTEREST, SEC, RUB, "152"),
-                entry(PF, AccountKind.CASH, null, RUB, "-10002"));
+                entry(PF, POLICY.securities(), SEC, RUB, "9850"),
+                entry(PF, POLICY.accruedInterest(), SEC, RUB, "152"),
+                entry(PF, POLICY.cash(), null, RUB, "-10002"));
         assertEntries(purchase.postings().get(1),
-                entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "50"),
-                entry(PF, AccountKind.CASH, null, RUB, "-50"));
+                entry(PF, POLICY.commissionExpense(), null, RUB, "50"),
+                entry(PF, POLICY.cash(), null, RUB, "-50"));
         assertSharedPostingIdentity(purchase);
         Position position = purchase.positionAfter().orElseThrow();
         assertEquals(10, position.quantity(), "dirty purchase quantity");
@@ -94,47 +104,47 @@ final class LedgerContractTests {
         assertEquals(m("20000"), beforePurchase.cashBalances().get(RUB),
                 "apply leaves the old ledger cash unchanged");
 
-        OperationResult coupon = BondOperations.coupon(id("coupon"), DAY1.plusDays(2), position,
+        OperationResult coupon = OPS.coupon(id("coupon"), DAY1.plusDays(2), position,
                 m("374"), Optional.of(m("48.62")));
         assertEntries(coupon.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, RUB, "374"),
-                entry(PF, AccountKind.ACCRUED_INTEREST, SEC, RUB, "-152"),
-                entry(PF, AccountKind.COUPON_INCOME, null, RUB, "-222"));
+                entry(PF, POLICY.cash(), null, RUB, "374"),
+                entry(PF, POLICY.accruedInterest(), SEC, RUB, "-152"),
+                entry(PF, POLICY.couponIncome(), null, RUB, "-222"));
         assertEntries(coupon.postings().get(1),
-                entry(PF, AccountKind.TAX_WITHHELD, null, RUB, "48.62"),
-                entry(PF, AccountKind.CASH, null, RUB, "-48.62"));
+                entry(PF, POLICY.taxWithheld(), null, RUB, "48.62"),
+                entry(PF, POLICY.cash(), null, RUB, "-48.62"));
         assertEquals(m("0"), coupon.positionAfter().orElseThrow().purchasedAccrued(),
                 "coupon releases the purchased accrued asset");
         ledger = ledger.apply(coupon);
-        assertEquals(m("-222"), ledger.balance(account(AccountKind.COUPON_INCOME, null, RUB)),
+        assertEquals(m("-222"), ledger.balance(account(POLICY.couponIncome(), null, RUB)),
                 "only net-of-purchased-accrued coupon is income");
         assertEquals(m("48.62"), ledger.taxWithheldBalances().get(RUB),
                 "withholding is tracked separately from coupon income");
 
         Position afterCoupon = coupon.positionAfter().orElseThrow();
-        OperationResult amort = BondOperations.amortization(id("amort"), DAY1.plusDays(3), afterCoupon,
+        OperationResult amort = OPS.amortization(id("amort"), DAY1.plusDays(3), afterCoupon,
                 m("1000"), m("1000"), Optional.empty());
         assertEntries(amort.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, RUB, "1000"),
-                entry(PF, AccountKind.SECURITIES, SEC, RUB, "-985"),
-                entry(PF, AccountKind.AMORTIZATION_GAIN, null, RUB, "-15"));
+                entry(PF, POLICY.cash(), null, RUB, "1000"),
+                entry(PF, POLICY.securities(), SEC, RUB, "-985"),
+                entry(PF, POLICY.amortizationGain(), null, RUB, "-15"));
         assertEquals(m("8865"), amort.positionAfter().orElseThrow().carryingAmount(),
                 "amortization reduces carrying amount proportionally to face");
         assertEquals(m("9000"), amort.positionAfter().orElseThrow().faceAmount(),
                 "amortization reduces face amount");
         ledger = ledger.apply(amort);
 
-        OperationResult redemption = BondOperations.sell(id("redeem"), DAY1.plusDays(4),
+        OperationResult redemption = OPS.sell(id("redeem"), DAY1.plusDays(4),
                 amort.positionAfter().orElseThrow(), 10, m("1000"), m("0"), m("0"), Optional.empty());
         assertEntries(redemption.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, RUB, "10000"),
-                entry(PF, AccountKind.SECURITIES, SEC, RUB, "-8865"),
-                entry(PF, AccountKind.REALIZED_PNL, null, RUB, "-1135"));
+                entry(PF, POLICY.cash(), null, RUB, "10000"),
+                entry(PF, POLICY.securities(), SEC, RUB, "-8865"),
+                entry(PF, POLICY.realizedPnl(), null, RUB, "-1135"));
         assertEquals(Position.empty(positionId(), RUB), redemption.positionAfter().orElseThrow(),
                 "full redemption yields explicit empty position");
         ledger = ledger.apply(redemption);
-        assertTrue(ledger.balance(account(AccountKind.SECURITIES, SEC, RUB)).isZero()
-                && ledger.balance(account(AccountKind.ACCRUED_INTEREST, SEC, RUB)).isZero(),
+        assertTrue(ledger.balance(account(POLICY.securities(), SEC, RUB)).isZero()
+                && ledger.balance(account(POLICY.accruedInterest(), SEC, RUB)).isZero(),
                 "after redemption security asset accounts are zero");
         assertEquals(0, ledger.position(SEC).orElseThrow().quantity(), "ledger retains the explicit empty position");
     }
@@ -142,23 +152,23 @@ final class LedgerContractTests {
     @Test
     void exactCentAccruedSplitAcrossPartialSales() {
         Position current = Position.empty(positionId(), RUB);
-        OperationResult first = BondOperations.buy(id("lot-a"), DAY1, current, 10,
+        OperationResult first = OPS.buy(id("lot-a"), DAY1, current, 10,
                 m("100"), m("15.20"), m("1000"), m("0"));
-        OperationResult second = BondOperations.buy(id("lot-b"), DAY1.plusDays(1),
+        OperationResult second = OPS.buy(id("lot-b"), DAY1.plusDays(1),
                 first.positionAfter().orElseThrow(), 3, m("100"), m("5"), m("1000"), m("0"));
         Position combined = second.positionAfter().orElseThrow();
         assertEquals(m("167"), combined.purchasedAccrued(), "two purchases retain total purchased accrued");
-        OperationResult partial = BondOperations.sell(id("lot-sell-1"), DAY1.plusDays(2), combined,
+        OperationResult partial = OPS.sell(id("lot-sell-1"), DAY1.plusDays(2), combined,
                 5, m("100"), m("0"), m("0"), Optional.empty());
         Money firstRelease = entryAmount(partial.postings().getFirst(),
-                account(AccountKind.ACCRUED_INTEREST, SEC, RUB)).negate();
+                account(POLICY.accruedInterest(), SEC, RUB)).negate();
         assertEquals(m("64.23"), firstRelease, "partial sale releases purchased accrued rounded once");
         Position residual = partial.positionAfter().orElseThrow();
         assertEquals(m("102.77"), residual.purchasedAccrued(), "partial-sale exact residual retained");
-        OperationResult finalSale = BondOperations.sell(id("lot-sell-2"), DAY1.plusDays(3), residual,
+        OperationResult finalSale = OPS.sell(id("lot-sell-2"), DAY1.plusDays(3), residual,
                 8, m("100"), m("0"), m("0"), Optional.empty());
         Money finalRelease = entryAmount(finalSale.postings().getFirst(),
-                account(AccountKind.ACCRUED_INTEREST, SEC, RUB)).negate();
+                account(POLICY.accruedInterest(), SEC, RUB)).negate();
         assertEquals(m("102.77"), finalRelease, "final disposal releases the full exact remainder");
         assertEquals(m("167"), firstRelease.add(finalRelease), "accrued releases sum to original total exactly");
     }
@@ -166,33 +176,33 @@ final class LedgerContractTests {
     @Test
     void accruedSaleAndRealizedLoss() {
         Position empty = Position.empty(positionId(), RUB);
-        Position accruedPosition = BondOperations.buy(id("f-buy"), DAY1, empty, 1,
+        Position accruedPosition = OPS.buy(id("f-buy"), DAY1, empty, 1,
                 m("100"), m("120"), m("1000"), m("0")).positionAfter().orElseThrow();
-        OperationResult betweenCouponSale = BondOperations.sell(id("f-sell"), DAY1.plusDays(1),
+        OperationResult betweenCouponSale = OPS.sell(id("f-sell"), DAY1.plusDays(1),
                 accruedPosition, 1, m("100"), m("200"), m("0"), Optional.empty());
         assertEntries(betweenCouponSale.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, RUB, "300"),
-                entry(PF, AccountKind.SECURITIES, SEC, RUB, "-100"),
-                entry(PF, AccountKind.ACCRUED_INTEREST, SEC, RUB, "-120"),
-                entry(PF, AccountKind.COUPON_INCOME, null, RUB, "-80"),
-                entry(PF, AccountKind.REALIZED_PNL, null, RUB, "0"));
+                entry(PF, POLICY.cash(), null, RUB, "300"),
+                entry(PF, POLICY.securities(), SEC, RUB, "-100"),
+                entry(PF, POLICY.accruedInterest(), SEC, RUB, "-120"),
+                entry(PF, POLICY.couponIncome(), null, RUB, "-80"),
+                entry(PF, POLICY.realizedPnl(), null, RUB, "0"));
 
         Position lossPosition = new Position(positionId(), 1, m("100"), m("100"), m("0"));
-        OperationResult loss = BondOperations.sell(id("loss"), DAY1, lossPosition, 1,
+        OperationResult loss = OPS.sell(id("loss"), DAY1, lossPosition, 1,
                 m("80"), m("0"), m("0"), Optional.empty());
-        assertEquals(m("20"), entryAmount(loss.postings().getFirst(), account(AccountKind.REALIZED_PNL, null, RUB)),
+        assertEquals(m("20"), entryAmount(loss.postings().getFirst(), account(POLICY.realizedPnl(), null, RUB)),
                 "sale below carrying cost debits realized PnL");
         assertFalse(loss.postings().getFirst().entries().stream().anyMatch(e ->
-                e.account().kind() == AccountKind.REALIZED_PNL && e.amount().isZero()),
+                e.account().code().equals(POLICY.realizedPnl()) && e.amount().isZero()),
                 "zero-valued account lines are omitted");
     }
 
     @Test
     void subMinorPartialAndFinalSales() {
-        Ledger fractionalLedger = Ledger.open(PF).apply(
-                BondOperations.opening(id("fractional-fund"), DAY1, PF, RUB, m("1")));
+        Ledger fractionalLedger = Ledger.open(PF, CHART, false).apply(
+                OPS.opening(id("fractional-fund"), DAY1, PF, RUB, m("1")));
         Position empty = Position.empty(positionId(), RUB);
-        OperationResult fractionalBuy = BondOperations.buy(id("fractional-buy"), DAY1.plusDays(1),
+        OperationResult fractionalBuy = OPS.buy(id("fractional-buy"), DAY1.plusDays(1),
                 empty, 10, m("0.0009"), m("0.0009"), m("0.0009"), m("0"));
         fractionalLedger = fractionalLedger.apply(fractionalBuy);
         Position original = fractionalBuy.positionAfter().orElseThrow();
@@ -201,7 +211,7 @@ final class LedgerContractTests {
         assertEquals(m("0.009"), original.faceAmount(), "fractional-quote purchase face amount");
         assertBalanced(fractionalBuy.postings().getFirst());
 
-        OperationResult partialSale = BondOperations.sell(id("fractional-sell-9"), DAY1.plusDays(2),
+        OperationResult partialSale = OPS.sell(id("fractional-sell-9"), DAY1.plusDays(2),
                 original, 9, m("0"), m("0"), m("0"), Optional.empty());
         Position afterPartial = partialSale.positionAfter().orElseThrow();
         assertEquals(1, afterPartial.quantity(), "sub-minor partial sale leaves one unit");
@@ -209,9 +219,9 @@ final class LedgerContractTests {
         assertTrue(afterPartial.purchasedAccrued().isZero(), "sub-minor partial sale leaves no purchased accrued");
         assertTrue(afterPartial.faceAmount().isZero(), "sub-minor partial sale leaves no face amount");
         assertEquals(m("-0.009"), entryAmount(partialSale.postings().getFirst(),
-                account(AccountKind.SECURITIES, SEC, RUB)), "partial sale caps the security asset release");
+                account(POLICY.securities(), SEC, RUB)), "partial sale caps the security asset release");
         assertEquals(m("-0.009"), entryAmount(partialSale.postings().getFirst(),
-                account(AccountKind.ACCRUED_INTEREST, SEC, RUB)), "partial sale caps the accrued asset release");
+                account(POLICY.accruedInterest(), SEC, RUB)), "partial sale caps the accrued asset release");
         assertEquals(m("0.009"), original.carryingAmount().subtract(afterPartial.carryingAmount()),
                 "sub-minor partial sale accounts for original carrying total exactly");
         assertEquals(m("0.009"), original.purchasedAccrued().subtract(afterPartial.purchasedAccrued()),
@@ -222,7 +232,7 @@ final class LedgerContractTests {
         fractionalLedger = fractionalLedger.apply(partialSale);
         assertPositionNonnegative(fractionalLedger.position(SEC).orElseThrow());
 
-        OperationResult finalSale = BondOperations.sell(id("fractional-sell-final"), DAY1.plusDays(3),
+        OperationResult finalSale = OPS.sell(id("fractional-sell-final"), DAY1.plusDays(3),
                 afterPartial, 1, m("0"), m("0"), m("0"), Optional.empty());
         assertTrue(finalSale.postings().getFirst().entries().isEmpty(),
                 "final disposal of already released fractional assets adds no cash or asset movement");
@@ -237,20 +247,20 @@ final class LedgerContractTests {
     void subMinorAmortizationDoesNotOverdrawCarryingValue() {
         SecurityId amortSecurity = new SecurityId("SU-TINY-AMORT");
         PositionId amortPositionId = new PositionId(PF, amortSecurity);
-        Ledger amortLedger = Ledger.open(PF).apply(
-                BondOperations.opening(id("tiny-amort-fund"), DAY1, PF, RUB, m("1")));
+        Ledger amortLedger = Ledger.open(PF, CHART, false).apply(
+                OPS.opening(id("tiny-amort-fund"), DAY1, PF, RUB, m("1")));
         Position amortEmpty = Position.empty(amortPositionId, RUB);
-        OperationResult amortBuy = BondOperations.buy(id("tiny-amort-buy"), DAY1.plusDays(1),
+        OperationResult amortBuy = OPS.buy(id("tiny-amort-buy"), DAY1.plusDays(1),
                 amortEmpty, 10, m("0.0009"), m("0"), m("0.0009"), m("0"));
         amortLedger = amortLedger.apply(amortBuy);
-        OperationResult tinyAmort = BondOperations.amortization(id("tiny-amort-90"), DAY1.plusDays(2),
+        OperationResult tinyAmort = OPS.amortization(id("tiny-amort-90"), DAY1.plusDays(2),
                 amortBuy.positionAfter().orElseThrow(), m("0.0081"), m("0.0081"), Optional.empty());
         Position afterTinyAmort = tinyAmort.positionAfter().orElseThrow();
         assertEquals(10, afterTinyAmort.quantity(), "sub-minor amortization keeps quantity outstanding");
         assertEquals(m("0.0009"), afterTinyAmort.faceAmount(), "sub-minor amortization caps face reduction");
         assertTrue(afterTinyAmort.carryingAmount().isZero(), "sub-minor amortization caps carrying removal");
         assertEquals(m("-0.009"), entryAmount(tinyAmort.postings().getFirst(),
-                account(AccountKind.SECURITIES, amortSecurity, RUB)),
+                account(POLICY.securities(), amortSecurity, RUB)),
                 "sub-minor partial amortization never credits more carrying value than held");
         assertBalanced(tinyAmort.postings().getFirst());
         amortLedger = amortLedger.apply(tinyAmort);
@@ -262,12 +272,12 @@ final class LedgerContractTests {
     void fullAmortizationCanBeRetiredWithoutDuplicateCashFlow() {
         SecurityId maturitySecurity = new SecurityId("SU-FULL-AMORT");
         PositionId maturityPositionId = new PositionId(PF, maturitySecurity);
-        Ledger maturityLedger = Ledger.open(PF).apply(
-                BondOperations.opening(id("maturity-fund"), DAY1, PF, RUB, m("1000")));
-        OperationResult maturityBuy = BondOperations.buy(id("maturity-buy"), DAY1.plusDays(1),
+        Ledger maturityLedger = Ledger.open(PF, CHART, false).apply(
+                OPS.opening(id("maturity-fund"), DAY1, PF, RUB, m("1000")));
+        OperationResult maturityBuy = OPS.buy(id("maturity-buy"), DAY1.plusDays(1),
                 Position.empty(maturityPositionId, RUB), 1, m("100"), m("0"), m("100"), m("0"));
         maturityLedger = maturityLedger.apply(maturityBuy);
-        OperationResult fullAmort = BondOperations.amortization(id("maturity-amort"), DAY1.plusDays(2),
+        OperationResult fullAmort = OPS.amortization(id("maturity-amort"), DAY1.plusDays(2),
                 maturityBuy.positionAfter().orElseThrow(), m("100"), m("100"), Optional.empty());
         maturityLedger = maturityLedger.apply(fullAmort);
         Money cashAfterBookedMaturityPayment = maturityLedger.cashBalances().get(RUB);
@@ -277,7 +287,7 @@ final class LedgerContractTests {
                 "full principal amortization leaves zero face value");
         assertTrue(fullAmort.positionAfter().orElseThrow().carryingAmount().isZero(),
                 "full principal amortization leaves zero carrying value");
-        OperationResult retire = BondOperations.sell(id("maturity-retire"), DAY1.plusDays(3),
+        OperationResult retire = OPS.sell(id("maturity-retire"), DAY1.plusDays(3),
                 fullAmort.positionAfter().orElseThrow(), 1, m("0"), m("0"), m("0"), Optional.empty());
         assertTrue(retire.postings().getFirst().entries().isEmpty(),
                 "zero-value sell after amortization creates no duplicate cash flow");
@@ -288,44 +298,45 @@ final class LedgerContractTests {
                 "zero-value sell retires the quantity");
     }
 
+    // DE-N-12: checked long overflow in buy quantity remains ArithmeticException.
     @Test
     void ledgerOperationAndPositionValidation() {
-        Ledger initial = Ledger.open(PF).apply(BondOperations.opening(id("dup"), DAY1, PF, RUB, m("10")));
-        OperationResult duplicate = BondOperations.deposit(id("dup"), DAY1, PF, RUB, m("1"));
+        Ledger initial = Ledger.open(PF, CHART, false).apply(OPS.opening(id("dup"), DAY1, PF, RUB, m("10")));
+        OperationResult duplicate = OPS.deposit(id("dup"), DAY1, PF, RUB, m("1"));
         assertThrows(IllegalStateException.class, () -> initial.apply(duplicate), "duplicate operation id rejected");
 
-        OperationResult foreign = BondOperations.opening(id("foreign"), DAY1,
+        OperationResult foreign = OPS.opening(id("foreign"), DAY1,
                 new PortfolioId("other"), RUB, m("1"));
-        assertThrows(IllegalStateException.class, () -> Ledger.open(PF).apply(foreign),
+        assertThrows(IllegalStateException.class, () -> Ledger.open(PF, CHART, false).apply(foreign),
                 "cross-portfolio posting rejected");
 
         Position empty = Position.empty(positionId(), RUB);
-        OperationResult staleOne = BondOperations.buy(id("stale-one"), DAY1, empty, 1,
+        OperationResult staleOne = OPS.buy(id("stale-one"), DAY1, empty, 1,
                 m("100"), m("0"), m("100"), m("0"));
-        OperationResult staleTwo = BondOperations.buy(id("stale-two"), DAY1, empty, 2,
+        OperationResult staleTwo = OPS.buy(id("stale-two"), DAY1, empty, 2,
                 m("100"), m("0"), m("100"), m("0"));
-        Ledger positioned = Ledger.open(PF, true).apply(staleOne);
+        Ledger positioned = Ledger.open(PF, CHART, true).apply(staleOne);
         assertThrows(IllegalStateException.class, () -> positioned.apply(staleTwo), "stale position rejected");
 
-        Ledger chronological = Ledger.open(PF).apply(
-                BondOperations.opening(id("later"), DAY1.plusDays(2), PF, RUB, m("5")));
+        Ledger chronological = Ledger.open(PF, CHART, false).apply(
+                OPS.opening(id("later"), DAY1.plusDays(2), PF, RUB, m("5")));
         assertThrows(IllegalStateException.class, () -> chronological.apply(
-                BondOperations.deposit(id("backdated"), DAY1.plusDays(1), PF, RUB, m("1"))),
+                OPS.deposit(id("backdated"), DAY1.plusDays(1), PF, RUB, m("1"))),
                 "backdated operation rejected");
 
         Position one = new Position(positionId(), 1, m("100"), m("100"), m("10"));
-        assertThrows(IllegalArgumentException.class, () -> BondOperations.sell(id("oversell"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> OPS.sell(id("oversell"), DAY1,
                 one, 2, m("100"), m("0"), m("0"), Optional.empty()), "over-sell rejected");
-        assertThrows(IllegalArgumentException.class, () -> BondOperations.amortization(id("overamort"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> OPS.amortization(id("overamort"), DAY1,
                 one, m("101"), m("100"), Optional.empty()), "over-amortization rejected");
-        assertThrows(IllegalArgumentException.class, () -> BondOperations.amortization(id("orphan"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> OPS.amortization(id("orphan"), DAY1,
                 one, m("100"), m("100"), Optional.empty()),
                 "full principal reduction with outstanding purchased accrued rejected");
-        assertThrows(IllegalArgumentException.class, () -> BondOperations.coupon(id("bad-tax"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> OPS.coupon(id("bad-tax"), DAY1,
                 one, m("1"), Optional.of(m("2"))), "tax above gross coupon rejected");
-        assertThrows(IllegalArgumentException.class, () -> BondOperations.buy(id("negative"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> OPS.buy(id("negative"), DAY1,
                 empty, 1, m("-1"), m("0"), m("100"), m("0")), "negative price rejected");
-        assertThrows(ArithmeticException.class, () -> BondOperations.buy(id("overflow"), DAY1,
+        assertThrows(ArithmeticException.class, () -> OPS.buy(id("overflow"), DAY1,
                 new Position(positionId(), Long.MAX_VALUE, m("1"), m("1"), m("0")),
                 1, m("1"), m("0"), m("1"), m("0")), "quantity overflow is detected");
         assertThrows(IllegalArgumentException.class, () -> new Position(positionId(), 0,
@@ -337,8 +348,8 @@ final class LedgerContractTests {
 
     @Test
     void ledgerCollectionsAndOperationResultsAreImmutable() {
-        Ledger initial = Ledger.open(PF).apply(BondOperations.opening(id("dup"), DAY1, PF, RUB, m("10")));
-        OperationResult duplicate = BondOperations.deposit(id("dup"), DAY1, PF, RUB, m("1"));
+        Ledger initial = Ledger.open(PF, CHART, false).apply(OPS.opening(id("dup"), DAY1, PF, RUB, m("10")));
+        OperationResult duplicate = OPS.deposit(id("dup"), DAY1, PF, RUB, m("1"));
         assertThrows(UnsupportedOperationException.class, () -> initial.balances().clear(),
                 "balances map is immutable");
         assertThrows(UnsupportedOperationException.class, () -> initial.positions().clear(),
@@ -355,33 +366,34 @@ final class LedgerContractTests {
 
     @Test
     void currenciesAndPostingBalance() {
-        Ledger ledger = Ledger.open(PF)
-                .apply(BondOperations.opening(id("rub-open"), DAY1, PF, RUB, m("100")))
-                .apply(BondOperations.opening(id("usd-open"), DAY1, PF, USD,
+        Ledger ledger = Ledger.open(PF, CHART, false)
+                .apply(OPS.opening(id("rub-open"), DAY1, PF, RUB, m("100")))
+                .apply(OPS.opening(id("usd-open"), DAY1, PF, USD,
                         new Money(new BigDecimal("20"), USD)));
         assertEquals(m("100"), ledger.cashBalances().get(RUB), "RUB cash balance isolated");
         assertEquals(new Money(new BigDecimal("20"), USD), ledger.cashBalances().get(USD),
                 "USD cash balance isolated");
         assertThrows(UnbalancedPostingException.class, () -> new Posting(id("cross-offset"), DAY1, List.of(
-                new Posting.Entry(account(AccountKind.CASH, null, RUB), m("1")),
-                new Posting.Entry(account(AccountKind.CASH, null, USD), new Money(new BigDecimal("-1"), USD)))),
+                new Posting.Entry(account(POLICY.cash(), null, RUB), m("1")),
+                new Posting.Entry(account(POLICY.cash(), null, USD), new Money(new BigDecimal("-1"), USD)))),
                 "different currencies cannot offset each other");
 
-        assertThrows(IllegalArgumentException.class, () -> new Account(PF, AccountKind.SECURITIES,
-                Optional.empty(), RUB), "security account requires a security id");
+        Account unvalidatedScopedAccount = new Account(PF, POLICY.securities(), Optional.empty(), RUB);
+        assertTrue(unvalidatedScopedAccount.security().isEmpty(),
+                "account value object does not know chart security-scoping rules");
         assertThrows(IllegalArgumentException.class, () -> new Posting(id("wrong-currency"), DAY1, List.of(
-                new Posting.Entry(account(AccountKind.CASH, null, RUB), new Money(new BigDecimal("1"), USD)))),
+                new Posting.Entry(account(POLICY.cash(), null, RUB), new Money(new BigDecimal("1"), USD)))),
                 "entry amount currency must match its account");
 
         for (String code : List.of("XDR", "XTS", "XAU")) {
             assertThrows(IllegalArgumentException.class,
-                    () -> account(AccountKind.CASH, null, Currency.getInstance(code)),
+                    () -> account(POLICY.cash(), null, Currency.getInstance(code)),
                     code + " pseudo-currency account rejected");
         }
-        assertEquals(RUB, account(AccountKind.CASH, null, RUB).currency(), "RUB account accepted");
+        assertEquals(RUB, account(POLICY.cash(), null, RUB).currency(), "RUB account accepted");
         Currency jpy = Currency.getInstance("JPY");
         assertEquals(0, jpy.getDefaultFractionDigits(), "JPY has zero minor-unit digits");
-        assertEquals(jpy, account(AccountKind.CASH, null, jpy).currency(), "zero-decimal JPY account accepted");
+        assertEquals(jpy, account(POLICY.cash(), null, jpy).currency(), "zero-decimal JPY account accepted");
     }
 
     @Test
@@ -394,78 +406,78 @@ final class LedgerContractTests {
         PositionId salePositionId = new PositionId(PF, saleSecurity);
         Currency usd = USD;
 
-        Ledger ledger = Ledger.open(PF)
-                .apply(BondOperations.opening(id("tax-rub-open"), DAY1, PF, RUB, m("1000")))
-                .apply(BondOperations.opening(id("tax-usd-open"), DAY1.plusDays(1), PF, usd,
+        Ledger ledger = Ledger.open(PF, CHART, false)
+                .apply(OPS.opening(id("tax-rub-open"), DAY1, PF, RUB, m("1000")))
+                .apply(OPS.opening(id("tax-usd-open"), DAY1.plusDays(1), PF, usd,
                         new Money(new BigDecimal("1000"), usd)));
 
-        OperationResult couponBuy = BondOperations.buy(id("tax-coupon-buy"), DAY1.plusDays(2),
+        OperationResult couponBuy = OPS.buy(id("tax-coupon-buy"), DAY1.plusDays(2),
                 Position.empty(couponPositionId, RUB), 1, m("0"), m("0"), m("100"), m("0"));
         ledger = ledger.apply(couponBuy);
-        OperationResult coupon = BondOperations.coupon(id("tax-coupon"), DAY1.plusDays(3),
+        OperationResult coupon = OPS.coupon(id("tax-coupon"), DAY1.plusDays(3),
                 couponBuy.positionAfter().orElseThrow(), m("10"), Optional.of(m("10")));
         assertEquals(2, coupon.postings().size(), "coupon withholding has its own posting");
         assertEntries(coupon.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, RUB, "10"),
-                entry(PF, AccountKind.COUPON_INCOME, null, RUB, "-10"));
+                entry(PF, POLICY.cash(), null, RUB, "10"),
+                entry(PF, POLICY.couponIncome(), null, RUB, "-10"));
         assertEntries(coupon.postings().get(1),
-                entry(PF, AccountKind.TAX_WITHHELD, null, RUB, "10"),
-                entry(PF, AccountKind.CASH, null, RUB, "-10"));
+                entry(PF, POLICY.taxWithheld(), null, RUB, "10"),
+                entry(PF, POLICY.cash(), null, RUB, "-10"));
         assertSharedPostingIdentity(coupon);
         ledger = ledger.apply(coupon);
 
-        OperationResult amortBuy = BondOperations.buy(id("tax-amort-buy"), DAY1.plusDays(4),
+        OperationResult amortBuy = OPS.buy(id("tax-amort-buy"), DAY1.plusDays(4),
                 Position.empty(amortPositionId, usd), 1, new Money(new BigDecimal("50"), usd),
                 Money.zero(usd), new Money(new BigDecimal("100"), usd), Money.zero(usd));
         ledger = ledger.apply(amortBuy);
-        OperationResult amortization = BondOperations.amortization(id("tax-amort"), DAY1.plusDays(5),
+        OperationResult amortization = OPS.amortization(id("tax-amort"), DAY1.plusDays(5),
                 amortBuy.positionAfter().orElseThrow(), new Money(new BigDecimal("40"), usd),
                 new Money(new BigDecimal("40"), usd), Optional.of(new Money(new BigDecimal("40"), usd)));
         assertEquals(2, amortization.postings().size(), "amortization withholding has its own posting");
         assertEntries(amortization.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, usd, "40"),
-                entry(PF, AccountKind.SECURITIES, amortSecurity, usd, "-20"),
-                entry(PF, AccountKind.AMORTIZATION_GAIN, null, usd, "-20"));
+                entry(PF, POLICY.cash(), null, usd, "40"),
+                entry(PF, POLICY.securities(), amortSecurity, usd, "-20"),
+                entry(PF, POLICY.amortizationGain(), null, usd, "-20"));
         assertEntries(amortization.postings().get(1),
-                entry(PF, AccountKind.TAX_WITHHELD, null, usd, "40"),
-                entry(PF, AccountKind.CASH, null, usd, "-40"));
+                entry(PF, POLICY.taxWithheld(), null, usd, "40"),
+                entry(PF, POLICY.cash(), null, usd, "-40"));
         assertSharedPostingIdentity(amortization);
         ledger = ledger.apply(amortization);
 
-        OperationResult saleBuy = BondOperations.buy(id("tax-sale-buy"), DAY1.plusDays(6),
+        OperationResult saleBuy = OPS.buy(id("tax-sale-buy"), DAY1.plusDays(6),
                 Position.empty(salePositionId, RUB), 1, m("80"), m("0"), m("100"),
                 new Commissions(m("3"), m("2")));
         assertEquals(2, saleBuy.postings().size(), "purchase commissions have their own posting");
         assertEntries(saleBuy.postings().getFirst(),
-                entry(PF, AccountKind.SECURITIES, saleSecurity, RUB, "80"),
-                entry(PF, AccountKind.CASH, null, RUB, "-80"));
+                entry(PF, POLICY.securities(), saleSecurity, RUB, "80"),
+                entry(PF, POLICY.cash(), null, RUB, "-80"));
         assertEntries(saleBuy.postings().get(1),
-                entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "5"),
-                entry(PF, AccountKind.CASH, null, RUB, "-5"));
+                entry(PF, POLICY.commissionExpense(), null, RUB, "5"),
+                entry(PF, POLICY.cash(), null, RUB, "-5"));
         assertSharedPostingIdentity(saleBuy);
         ledger = ledger.apply(saleBuy);
-        OperationResult sale = BondOperations.sell(id("tax-sale"), DAY1.plusDays(7),
+        OperationResult sale = OPS.sell(id("tax-sale"), DAY1.plusDays(7),
                 saleBuy.positionAfter().orElseThrow(), 1, m("100"), m("0"),
                 new Commissions(m("2"), m("3")), Optional.of(m("100")));
         assertEquals(3, sale.postings().size(), "full redemption has separate commission and withholding postings");
         assertEntries(sale.postings().getFirst(),
-                entry(PF, AccountKind.CASH, null, RUB, "100"),
-                entry(PF, AccountKind.SECURITIES, saleSecurity, RUB, "-80"),
-                entry(PF, AccountKind.REALIZED_PNL, null, RUB, "-20"));
+                entry(PF, POLICY.cash(), null, RUB, "100"),
+                entry(PF, POLICY.securities(), saleSecurity, RUB, "-80"),
+                entry(PF, POLICY.realizedPnl(), null, RUB, "-20"));
         assertEntries(sale.postings().get(1),
-                entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "5"),
-                entry(PF, AccountKind.CASH, null, RUB, "-5"));
+                entry(PF, POLICY.commissionExpense(), null, RUB, "5"),
+                entry(PF, POLICY.cash(), null, RUB, "-5"));
         assertEntries(sale.postings().get(2),
-                entry(PF, AccountKind.TAX_WITHHELD, null, RUB, "100"),
-                entry(PF, AccountKind.CASH, null, RUB, "-100"));
+                entry(PF, POLICY.taxWithheld(), null, RUB, "100"),
+                entry(PF, POLICY.cash(), null, RUB, "-100"));
         assertSharedPostingIdentity(sale);
-        OperationResult legacyCommissionSale = BondOperations.sell(id("legacy-tax-sale"), DAY1.plusDays(7),
+        OperationResult legacyCommissionSale = OPS.sell(id("legacy-tax-sale"), DAY1.plusDays(7),
                 saleBuy.positionAfter().orElseThrow(), 1, m("100"), m("0"), m("5"), Optional.empty());
         assertEquals(2, legacyCommissionSale.postings().size(),
                 "legacy single-commission sale overload also creates a separate commission posting");
         assertEntries(legacyCommissionSale.postings().get(1),
-                entry(PF, AccountKind.COMMISSION_EXPENSE, null, RUB, "5"),
-                entry(PF, AccountKind.CASH, null, RUB, "-5"));
+                entry(PF, POLICY.commissionExpense(), null, RUB, "5"),
+                entry(PF, POLICY.cash(), null, RUB, "-5"));
         assertEquals(Position.empty(salePositionId, RUB), sale.positionAfter().orElseThrow(),
                 "taxable full redemption still retires the position");
         ledger = ledger.apply(sale);
@@ -478,7 +490,7 @@ final class LedgerContractTests {
                 "USD withholding is isolated");
         assertEquals(m("1020"), ledger.cashBalances().get(RUB).add(ledger.taxWithheldBalances().get(RUB)),
                 "RUB cash plus actual withholding retains gross receipts less commissions and purchases");
-        assertEquals(m("10"), ledger.balance(account(AccountKind.COMMISSION_EXPENSE, null, RUB)),
+        assertEquals(m("10"), ledger.balance(account(POLICY.commissionExpense(), null, RUB)),
                 "broker and other commissions total to the unchanged expense amount");
         assertEquals(new Money(new BigDecimal("990"), usd),
                 ledger.cashBalances().get(usd).add(ledger.taxWithheldBalances().get(usd)),
@@ -499,20 +511,20 @@ final class LedgerContractTests {
     void absentAndZeroWithholdingDoNotCreateTaxPostings() {
         Position position = new Position(positionId(), 1, m("100"), m("100"), m("0"));
         List<OperationResult> results = List.of(
-                BondOperations.coupon(id("no-coupon-tax"), DAY1, position, m("10"), Optional.empty()),
-                BondOperations.coupon(id("zero-coupon-tax"), DAY1, position, m("10"), Optional.of(m("0"))),
-                BondOperations.amortization(id("no-amort-tax"), DAY1, position,
+                OPS.coupon(id("no-coupon-tax"), DAY1, position, m("10"), Optional.empty()),
+                OPS.coupon(id("zero-coupon-tax"), DAY1, position, m("10"), Optional.of(m("0"))),
+                OPS.amortization(id("no-amort-tax"), DAY1, position,
                         m("10"), m("10"), Optional.empty()),
-                BondOperations.amortization(id("zero-amort-tax"), DAY1, position,
+                OPS.amortization(id("zero-amort-tax"), DAY1, position,
                         m("10"), m("10"), Optional.of(m("0"))),
-                BondOperations.sell(id("no-sale-tax"), DAY1, position,
+                OPS.sell(id("no-sale-tax"), DAY1, position,
                         1, m("100"), m("0"), m("0"), Optional.empty()),
-                BondOperations.sell(id("zero-sale-tax"), DAY1, position,
+                OPS.sell(id("zero-sale-tax"), DAY1, position,
                         1, m("100"), m("0"), m("0"), Optional.of(m("0"))));
         for (OperationResult result : results) {
             assertEquals(1, result.postings().size(), "zero or absent withholding keeps only the base posting");
             assertTrue(result.postings().getFirst().entries().stream()
-                    .noneMatch(entry -> entry.account().kind() == AccountKind.TAX_WITHHELD),
+                    .noneMatch(entry -> entry.account().code().equals(POLICY.taxWithheld())),
                     "zero or absent withholding has no withheld-tax entry");
         }
     }
@@ -527,18 +539,18 @@ final class LedgerContractTests {
 
         Position empty = Position.empty(positionId(), RUB);
         Commissions usdFees = new Commissions(new Money(new BigDecimal("1"), USD), Money.zero(USD));
-        assertThrows(IllegalArgumentException.class, () -> BondOperations.buy(id("wrong-buy-fee-currency"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> OPS.buy(id("wrong-buy-fee-currency"), DAY1,
                 empty, 1, m("100"), m("0"), m("100"), usdFees),
                 "buy commissions must match the position currency");
         Position current = new Position(positionId(), 1, m("100"), m("100"), m("0"));
-        assertThrows(IllegalArgumentException.class, () -> BondOperations.sell(id("wrong-sale-fee-currency"), DAY1,
+        assertThrows(IllegalArgumentException.class, () -> OPS.sell(id("wrong-sale-fee-currency"), DAY1,
                 current, 1, m("100"), m("0"), usdFees, Optional.empty()),
                 "sale commissions must match the position currency");
 
         Commissions noFees = new Commissions(m("0"), m("0"));
-        OperationResult freeBuy = BondOperations.buy(id("zero-fees-buy"), DAY1, empty, 1,
+        OperationResult freeBuy = OPS.buy(id("zero-fees-buy"), DAY1, empty, 1,
                 m("100"), m("0"), m("100"), noFees);
-        OperationResult freeSale = BondOperations.sell(id("zero-fees-sale"), DAY1, current, 1,
+        OperationResult freeSale = OPS.sell(id("zero-fees-sale"), DAY1, current, 1,
                 m("100"), m("0"), noFees, Optional.empty());
         assertEquals(1, freeBuy.postings().size(), "zero buy fees add no commission posting");
         assertEquals(1, freeSale.postings().size(), "zero sale fees add no commission posting");
@@ -546,27 +558,28 @@ final class LedgerContractTests {
 
     @Test
     void withheldTaxCannotFundStrictCashSpending() {
-        Ledger ledger = Ledger.open(PF);
-        OperationResult freePosition = BondOperations.buy(id("free-position"), DAY1,
+        Ledger ledger = Ledger.open(PF, CHART, false);
+        OperationResult freePosition = OPS.buy(id("free-position"), DAY1,
                 Position.empty(positionId(), RUB), 1, m("0"), m("0"), m("100"), m("0"));
         ledger = ledger.apply(freePosition);
-        OperationResult fullWithholding = BondOperations.coupon(id("full-withholding"), DAY1.plusDays(1),
+        OperationResult fullWithholding = OPS.coupon(id("full-withholding"), DAY1.plusDays(1),
                 freePosition.positionAfter().orElseThrow(), m("10"), Optional.of(m("10")));
         ledger = ledger.apply(fullWithholding);
         assertTrue(ledger.cashBalances().isEmpty(), "withholding leaves no spendable cash");
         assertEquals(m("10"), ledger.taxWithheldBalances().get(RUB), "withheld balance remains recorded");
         Ledger afterWithheld = ledger;
         assertThrows(IllegalStateException.class, () -> afterWithheld.apply(
-                BondOperations.withdrawal(id("spend-withheld"), DAY1.plusDays(2), PF, RUB, m("1"))),
+                OPS.withdrawal(id("spend-withheld"), DAY1.plusDays(2), PF, RUB, m("1"))),
                 "strict cash validation cannot spend a withheld-tax balance");
         assertTrue(ledger.cashBalances().isEmpty(), "failed spending does not mutate ledger cash");
     }
 
+    // DE-P-10/11: signed correction postings, append-only history, and cumulative withholding lifecycle.
     @Test
     void taxCorrectionsAreLinkedCumulativeAndScopedToTheirOriginalOperation() {
         PositionId firstPositionId = new PositionId(PF, new SecurityId("SU-TAX-CORRECTION-1"));
         PositionId secondPositionId = new PositionId(PF, new SecurityId("SU-TAX-CORRECTION-2"));
-        Ledger ledger = Ledger.open(PF).apply(BondOperations.opening(id("correction-fund"), DAY1, PF, RUB, m("100")));
+        Ledger ledger = Ledger.open(PF, CHART, false).apply(OPS.opening(id("correction-fund"), DAY1, PF, RUB, m("100")));
         TaxedOperation first = applyTaxedCoupon(ledger, "correction-origin-1", firstPositionId,
                 DAY1.plusDays(1), m("10"), m("4"));
         ledger = first.ledger();
@@ -576,27 +589,30 @@ final class LedgerContractTests {
         assertEquals(m("4"), ledger.taxWithheldForOperation(first.operation()), "original tax is queryable by operation");
         assertEquals(m("7"), ledger.taxWithheldForOperation(second.operation()), "second original tax is isolated");
 
-        OperationResult redemption = BondOperations.sell(id("correction-origin-redemption"), DAY1.plusDays(5),
+        OperationResult redemption = OPS.sell(id("correction-origin-redemption"), DAY1.plusDays(5),
                 first.position(), 1, m("0"), m("0"), m("0"), Optional.empty());
         ledger = ledger.apply(redemption);
         Map<SecurityId, Position> afterRedemption = ledger.positions();
 
-        OperationResult increase = BondOperations.taxCorrection(id("correction-increase"), DAY1.plusDays(6),
+        OperationResult increase = OPS.taxCorrection(id("correction-increase"), DAY1.plusDays(6),
                 PF, first.operation(), m("2"));
         assertEquals(Optional.of(first.operation()), increase.postings().getFirst().adjustsOperation(),
                 "correction posting links to its original taxed operation");
         assertEntries(increase.postings().getFirst(),
-                entry(PF, AccountKind.TAX_WITHHELD, null, RUB, "2"),
-                entry(PF, AccountKind.CASH, null, RUB, "-2"));
+                entry(PF, POLICY.taxWithheld(), null, RUB, "2"),
+                entry(PF, POLICY.cash(), null, RUB, "-2"));
         Ledger afterIncrease = ledger.apply(increase);
         assertEquals(m("6"), afterIncrease.taxWithheldForOperation(first.operation()), "positive adjustment increases tax");
         assertEquals(afterRedemption, afterIncrease.positions(), "correction does not alter sold position history");
 
-        OperationResult decrease = BondOperations.taxCorrection(id("correction-decrease"), DAY1.plusDays(7),
+        OperationResult decrease = OPS.taxCorrection(id("correction-decrease"), DAY1.plusDays(7),
                 PF, first.operation(), m("-1"));
+        assertEntries(decrease.postings().getFirst(),
+                entry(PF, POLICY.taxWithheld(), null, RUB, "-1"),
+                entry(PF, POLICY.cash(), null, RUB, "1"));
         Ledger afterDecrease = afterIncrease.apply(decrease);
         assertEquals(m("5"), afterDecrease.taxWithheldForOperation(first.operation()), "negative adjustment decreases tax");
-        OperationResult fullRefund = BondOperations.taxCorrection(id("correction-full-refund"), DAY1.plusDays(8),
+        OperationResult fullRefund = OPS.taxCorrection(id("correction-full-refund"), DAY1.plusDays(8),
                 PF, first.operation(), m("-5"));
         Ledger corrected = afterDecrease.apply(fullRefund);
         assertEquals(Money.zero(RUB), corrected.taxWithheldForOperation(first.operation()),
@@ -609,30 +625,30 @@ final class LedgerContractTests {
 
         Ledger afterFullRefund = corrected;
         assertThrows(IllegalStateException.class, () -> afterFullRefund.apply(
-                BondOperations.taxCorrection(id("over-refund"), DAY1.plusDays(9),
+                OPS.taxCorrection(id("over-refund"), DAY1.plusDays(9),
                         PF, first.operation(), m("-0.01"))),
                 "refund cannot exceed the selected origin even when another tax balance remains");
         assertThrows(IllegalArgumentException.class,
                 () -> corrected.taxWithheldForOperation(id("unknown-tax-origin")),
                 "query rejects an operation without original withholding");
-        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+        assertThrows(IllegalStateException.class, () -> corrected.apply(OPS.taxCorrection(
                 id("correction-unknown-origin"), DAY1.plusDays(9), PF, id("not-in-ledger"), m("1"))),
                 "correction rejects a nonexistent original operation");
-        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+        assertThrows(IllegalStateException.class, () -> corrected.apply(OPS.taxCorrection(
                 id("correction-untaxed-origin"), DAY1.plusDays(9), PF, id("correction-fund"), m("1"))),
                 "correction requires an actual nonzero original withholding posting");
-        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+        assertThrows(IllegalStateException.class, () -> corrected.apply(OPS.taxCorrection(
                 id("correction-chain"), DAY1.plusDays(9), PF, increase.operation(), m("1"))),
                 "correction cannot be linked to another correction");
         assertThrows(IllegalStateException.class, () -> corrected.apply(increase),
                 "correction operation IDs remain unique");
-        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+        assertThrows(IllegalStateException.class, () -> corrected.apply(OPS.taxCorrection(
                 id("backdated-correction"), DAY1.plusDays(7), PF, first.operation(), m("1"))),
                 "corrections cannot be backdated");
-        assertThrows(IllegalArgumentException.class, () -> BondOperations.taxCorrection(
+        assertThrows(IllegalArgumentException.class, () -> OPS.taxCorrection(
                 id("self-correction"), DAY1.plusDays(9), PF, id("self-correction"), m("1")),
                 "correction cannot reference itself");
-        assertThrows(IllegalStateException.class, () -> corrected.apply(BondOperations.taxCorrection(
+        assertThrows(IllegalStateException.class, () -> corrected.apply(OPS.taxCorrection(
                 id("wrong-currency-correction"), DAY1.plusDays(9), PF, first.operation(),
                 new Money(new BigDecimal("1"), USD))),
                 "correction currency must match the original withholding currency");
@@ -641,7 +657,7 @@ final class LedgerContractTests {
         assertEquals(corrected.state(), restored.state(), "correction links and postings survive state restoration");
         assertEquals(Money.zero(RUB), restored.taxWithheldForOperation(first.operation()),
                 "restored query includes all linked adjustments");
-        OperationResult continuation = BondOperations.taxCorrection(id("restored-correction"), DAY1.plusDays(9),
+        OperationResult continuation = OPS.taxCorrection(id("restored-correction"), DAY1.plusDays(9),
                 PF, first.operation(), m("1"));
         assertEquals(corrected.apply(continuation).state(), restored.apply(continuation).state(),
                 "restored ledger continues with the same linked correction");
@@ -650,12 +666,12 @@ final class LedgerContractTests {
     @Test
     void taxCorrectionRespectsStrictCashAvailability() {
         PositionId freePositionId = new PositionId(PF, new SecurityId("SU-TAX-CORRECTION-CASH"));
-        Ledger ledger = Ledger.open(PF);
+        Ledger ledger = Ledger.open(PF, CHART, false);
         TaxedOperation fullTax = applyTaxedCoupon(ledger, "cash-correction-origin", freePositionId,
                 DAY1, m("10"), m("10"));
         ledger = fullTax.ledger();
         assertTrue(ledger.cashBalances().isEmpty(), "gross coupon fully withheld leaves no cash");
-        OperationResult extraTax = BondOperations.taxCorrection(id("cash-correction-extra"), DAY1.plusDays(2),
+        OperationResult extraTax = OPS.taxCorrection(id("cash-correction-extra"), DAY1.plusDays(2),
                 PF, fullTax.operation(), m("1"));
         Ledger beforeRejectedCorrection = ledger;
         assertThrows(IllegalStateException.class, () -> beforeRejectedCorrection.apply(extraTax),
@@ -663,7 +679,7 @@ final class LedgerContractTests {
         assertEquals(m("10"), ledger.taxWithheldForOperation(fullTax.operation()),
                 "failed correction is atomic");
 
-        OperationResult refund = BondOperations.taxCorrection(id("cash-correction-refund"), DAY1.plusDays(2),
+        OperationResult refund = OPS.taxCorrection(id("cash-correction-refund"), DAY1.plusDays(2),
                 PF, fullTax.operation(), m("-5"));
         ledger = ledger.apply(refund);
         assertEquals(m("5"), ledger.cashBalances().get(RUB), "refund returns cash to the portfolio");
@@ -676,7 +692,7 @@ final class LedgerContractTests {
     @Test
     void restoreRejectsMalformedTaxCorrectionLinksAndNegativeTax() {
         PositionId positionId = new PositionId(PF, new SecurityId("SU-MALFORMED-TAX-CORRECTION"));
-        TaxedOperation taxed = applyTaxedCoupon(Ledger.open(PF, true), "malformed-tax-origin", positionId,
+        TaxedOperation taxed = applyTaxedCoupon(Ledger.open(PF, CHART, true), "malformed-tax-origin", positionId,
                 DAY1, m("10"), m("4"));
         LedgerState originalState = taxed.ledger().state();
         LocalDate correctionDate = DAY1.plusDays(2);
@@ -709,16 +725,17 @@ final class LedgerContractTests {
                 "restore rejects links chained through another correction");
 
         Posting unlinkedNegativeTax = new Posting(id("malformed-unlinked-negative-tax"), correctionDate, List.of(
-                new Posting.Entry(account(AccountKind.TAX_WITHHELD, null, RUB), m("-1")),
-                new Posting.Entry(account(AccountKind.CASH, null, RUB), m("1"))));
+                new Posting.Entry(account(POLICY.taxWithheld(), null, RUB), m("-1")),
+                new Posting.Entry(account(POLICY.cash(), null, RUB), m("1"))));
         assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(appendPosting(originalState, unlinkedNegativeTax)),
                 "restore rejects negative tax entries without a correction link");
     }
 
+    // DE-P-12: chart-bearing state restores and accepts a continuation operation.
     @Test
     void emptyAndRichLedgerStateRoundTripAndContinuation() {
-        Ledger empty = Ledger.open(PF, true);
+        Ledger empty = Ledger.open(PF, CHART, true);
         assertEquals(empty.state(), Ledger.restore(empty.state()).state(), "empty ledger state round-trips");
         Ledger ledger = populatedLedger();
         LedgerState state = ledger.state();
@@ -731,7 +748,7 @@ final class LedgerContractTests {
         assertEquals(m("0.50"), restored.taxWithheldBalances().get(RUB),
                 "restored ledger retains actual withholding separately");
 
-        OperationResult next = BondOperations.deposit(id("state-next"), DAY1.plusDays(3), PF, RUB, m("7"));
+        OperationResult next = OPS.deposit(id("state-next"), DAY1.plusDays(3), PF, RUB, m("7"));
         assertEquals(restored.apply(next).state(), ledger.apply(next).state(),
                 "restored ledger continues with the same apply result");
 
@@ -757,7 +774,7 @@ final class LedgerContractTests {
         NavigableMap<LocalDate, List<Posting>> inputHistory = new TreeMap<>();
         state.postingsByDate().forEach((date, postings) -> inputHistory.put(date, new java.util.ArrayList<>(postings)));
         Set<OperationId> inputIds = new HashSet<>(state.operationIds());
-        LedgerState detached = new LedgerState(state.portfolio(), state.allowNegativeCash(), inputBalances,
+        LedgerState detached = new LedgerState(state.portfolio(), state.chart(), state.allowNegativeCash(), inputBalances,
                 inputPositions, inputHistory, inputIds);
         inputBalances.clear();
         inputPositions.clear();
@@ -767,11 +784,12 @@ final class LedgerContractTests {
         assertEquals(state, detached, "snapshot constructor copies every input collection deeply");
     }
 
+    // DE-N-06: restored untrusted state must replay exactly and honor structural invariants.
     @Test
     void restoreRejectsStructurallyInconsistentState() {
         LedgerState state = populatedLedger().state();
         Map<Account, Money> wrongBalances = new HashMap<>(state.balances());
-        Account cash = account(AccountKind.CASH, null, RUB);
+        Account cash = account(POLICY.cash(), null, RUB);
         wrongBalances.put(cash, wrongBalances.get(cash).add(m("1")));
         assertThrows(IllegalArgumentException.class,
                 () -> Ledger.restore(withState(state, state.allowNegativeCash(), wrongBalances,
@@ -820,7 +838,7 @@ final class LedgerContractTests {
                         wrongPositionIdentity, state.postingsByDate(), state.operationIds())),
                 "restore rejects position from a different portfolio");
 
-        Ledger margin = Ledger.open(PF, true).apply(BondOperations.withdrawal(
+        Ledger margin = Ledger.open(PF, CHART, true).apply(OPS.withdrawal(
                 id("state-margin"), DAY1, PF, RUB, m("10")));
         LedgerState marginState = margin.state();
         assertThrows(IllegalArgumentException.class,
@@ -828,7 +846,7 @@ final class LedgerContractTests {
                         marginState.positions(), marginState.postingsByDate(), marginState.operationIds())),
                 "restore enforces the persisted strict-cash policy");
 
-        Account wrongCurrencyAccount = account(AccountKind.CASH, null, RUB);
+        Account wrongCurrencyAccount = account(POLICY.cash(), null, RUB);
         Map<Account, Money> wrongCurrency = new HashMap<>(state.balances());
         wrongCurrency.put(wrongCurrencyAccount, new Money(new BigDecimal("1"), USD));
         assertThrows(IllegalArgumentException.class,
@@ -836,7 +854,7 @@ final class LedgerContractTests {
                         state.positions(), state.postingsByDate(), state.operationIds())),
                 "restore rejects account and balance currency mismatch");
 
-        Account foreignCash = new Account(foreignPortfolio, AccountKind.CASH, Optional.empty(), RUB);
+        Account foreignCash = new Account(foreignPortfolio, POLICY.cash(), Optional.empty(), RUB);
         Map<Account, Money> wrongPortfolioBalances = new HashMap<>(state.balances());
         Money cashBalance = wrongPortfolioBalances.remove(cash);
         wrongPortfolioBalances.put(foreignCash, cashBalance);
@@ -849,15 +867,15 @@ final class LedgerContractTests {
     @Test
     void restoreAllowsMultiplePostingsPerOperationOnOneDate() {
         OperationId operation = id("split-posting-operation");
-        Account cash = account(AccountKind.CASH, null, RUB);
-        Account equity = account(AccountKind.EQUITY, null, RUB);
+        Account cash = account(POLICY.cash(), null, RUB);
+        Account equity = account(POLICY.equity(), null, RUB);
         Posting first = new Posting(operation, DAY1, List.of(
                 new Posting.Entry(cash, m("1")), new Posting.Entry(equity, m("-1"))));
         Posting second = new Posting(operation, DAY1, List.of(
                 new Posting.Entry(cash, m("2")), new Posting.Entry(equity, m("-2"))));
         NavigableMap<LocalDate, List<Posting>> history = new TreeMap<>();
         history.put(DAY1, List.of(first, second));
-        LedgerState state = new LedgerState(PF, false,
+        LedgerState state = new LedgerState(PF, CHART, false,
                 Map.of(cash, m("3"), equity, m("-3")), Map.of(), history, Set.of(operation));
         Ledger restored = Ledger.restore(state);
         assertEquals(state, restored.state(), "restore allows several balanced postings for one operation ID");
@@ -866,20 +884,20 @@ final class LedgerContractTests {
         reusedAcrossDates.put(DAY1, List.of(first));
         reusedAcrossDates.put(DAY1.plusDays(1), List.of(new Posting(operation, DAY1.plusDays(1), List.of(
                 new Posting.Entry(cash, m("2")), new Posting.Entry(equity, m("-2"))))));
-        LedgerState corrupt = new LedgerState(PF, false,
+        LedgerState corrupt = new LedgerState(PF, CHART, false,
                 Map.of(cash, m("3"), equity, m("-3")), Map.of(), reusedAcrossDates, Set.of(operation));
         assertThrows(IllegalArgumentException.class, () -> Ledger.restore(corrupt),
                 "restore rejects one operation ID split across dates");
     }
 
     private static Ledger populatedLedger() {
-        Ledger ledger = Ledger.open(PF).apply(
-                BondOperations.opening(id("state-open"), DAY1, PF, RUB, m("10000")));
+        Ledger ledger = Ledger.open(PF, CHART, false).apply(
+                OPS.opening(id("state-open"), DAY1, PF, RUB, m("10000")));
         Position emptyPosition = Position.empty(positionId(), RUB);
-        OperationResult purchase = BondOperations.buy(id("state-buy"), DAY1.plusDays(1), emptyPosition,
+        OperationResult purchase = OPS.buy(id("state-buy"), DAY1.plusDays(1), emptyPosition,
                 2, m("100"), m("2"), m("1000"), m("1"));
         ledger = ledger.apply(purchase);
-        OperationResult coupon = BondOperations.coupon(id("state-coupon"), DAY1.plusDays(2),
+        OperationResult coupon = OPS.coupon(id("state-coupon"), DAY1.plusDays(2),
                 purchase.positionAfter().orElseThrow(), m("3"), Optional.of(m("0.50")));
         return ledger.apply(coupon);
     }
@@ -887,12 +905,12 @@ final class LedgerContractTests {
     private static TaxedOperation applyTaxedCoupon(Ledger ledger, String operationName, PositionId positionId,
                                                    LocalDate buyDate, Money gross, Money tax) {
         Currency currency = gross.currency();
-        OperationResult purchase = BondOperations.buy(id(operationName + "-buy"), buyDate,
+        OperationResult purchase = OPS.buy(id(operationName + "-buy"), buyDate,
                 Position.empty(positionId, currency), 1, Money.zero(currency), Money.zero(currency),
                 new Money(new BigDecimal("100"), currency), Money.zero(currency));
         ledger = ledger.apply(purchase);
         OperationId couponId = id(operationName);
-        OperationResult coupon = BondOperations.coupon(couponId, buyDate.plusDays(1),
+        OperationResult coupon = OPS.coupon(couponId, buyDate.plusDays(1),
                 purchase.positionAfter().orElseThrow(), gross, Optional.of(tax));
         ledger = ledger.apply(coupon);
         return new TaxedOperation(ledger, couponId, coupon.positionAfter().orElseThrow());
@@ -901,8 +919,8 @@ final class LedgerContractTests {
     private static Posting taxTransferPosting(OperationId operation, LocalDate date,
                                               OperationId originalOperation, Money adjustment) {
         return new Posting(operation, date, List.of(
-                new Posting.Entry(account(AccountKind.TAX_WITHHELD, null, adjustment.currency()), adjustment),
-                new Posting.Entry(account(AccountKind.CASH, null, adjustment.currency()), adjustment.negate())),
+                new Posting.Entry(account(POLICY.taxWithheld(), null, adjustment.currency()), adjustment),
+                new Posting.Entry(account(POLICY.cash(), null, adjustment.currency()), adjustment.negate())),
                 Optional.of(originalOperation));
     }
 
@@ -923,7 +941,7 @@ final class LedgerContractTests {
         history.put(posting.date(), datedPostings);
         Set<OperationId> operationIds = new HashSet<>(source.operationIds());
         operationIds.add(posting.operation());
-        return new LedgerState(source.portfolio(), source.allowNegativeCash(), balances, source.positions(),
+        return new LedgerState(source.portfolio(), source.chart(), source.allowNegativeCash(), balances, source.positions(),
                 history, operationIds);
     }
 
@@ -931,16 +949,16 @@ final class LedgerContractTests {
                                          Map<Account, Money> balances, Map<SecurityId, Position> positions,
                                          NavigableMap<LocalDate, List<Posting>> history,
                                          Set<OperationId> operationIds) {
-        return new LedgerState(source.portfolio(), allowNegativeCash, balances, positions, history, operationIds);
+        return new LedgerState(source.portfolio(), source.chart(), allowNegativeCash, balances, positions, history, operationIds);
     }
 
-    private static Account account(AccountKind kind, SecurityId security, Currency currency) {
-        return new Account(PF, kind, Optional.ofNullable(security), currency);
+    private static Account account(AccountCode code, SecurityId security, Currency currency) {
+        return new Account(PF, code, Optional.ofNullable(security), currency);
     }
 
-    private static ExpectedEntry entry(PortfolioId portfolio, AccountKind kind, SecurityId security,
+    private static ExpectedEntry entry(PortfolioId portfolio, AccountCode code, SecurityId security,
                                        Currency currency, String amount) {
-        return new ExpectedEntry(new Account(portfolio, kind, Optional.ofNullable(security), currency),
+        return new ExpectedEntry(new Account(portfolio, code, Optional.ofNullable(security), currency),
                 new Money(new BigDecimal(amount), currency));
     }
 

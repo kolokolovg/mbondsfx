@@ -16,7 +16,8 @@ import ru.onlychill.mbondsfx.core.id.PortfolioId;
 import ru.onlychill.mbondsfx.core.id.PositionId;
 import ru.onlychill.mbondsfx.core.id.SecurityId;
 import ru.onlychill.mbondsfx.core.ledger.Account;
-import ru.onlychill.mbondsfx.core.ledger.AccountKind;
+import ru.onlychill.mbondsfx.core.ledger.AccountCode;
+import ru.onlychill.mbondsfx.core.ledger.BondAccountingPolicy;
 import ru.onlychill.mbondsfx.core.ledger.BondOperations;
 import ru.onlychill.mbondsfx.core.ledger.Commissions;
 import ru.onlychill.mbondsfx.core.ledger.Ledger;
@@ -32,29 +33,31 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TaxCorrectionMemoryContractTests {
     private static final Currency RUB = Currency.getInstance("RUB");
     private static final LocalDate DAY = LocalDate.of(2026, 10, 20);
+    private static final BondAccountingPolicy STANDARD = BondAccountingPolicy.standard();
+    private static final BondOperations OPERATIONS = STANDARD.operations();
 
     @Test
     void correctionsAreAppendOnlyLinkedAndCasAtomic() {
         PortfolioId portfolio = new PortfolioId("tax-correction-memory");
         OperationId couponId = id("tax-coupon");
         InMemoryLedgerRepository repository = new InMemoryLedgerRepository();
-        LedgerApplicationService service = new LedgerApplicationService(repository);
+        LedgerApplicationService service = new LedgerApplicationService(repository, STANDARD);
         Position position = Position.empty(new PositionId(portfolio, new SecurityId("SU-TAX-CORRECTION")), RUB);
 
         service.apply(portfolio, false,
-                BondOperations.deposit(id("tax-deposit"), DAY, portfolio, RUB, money("200")));
-        OperationResult purchase = BondOperations.buy(id("tax-buy"), DAY.plusDays(1), position, 1,
+                OPERATIONS.deposit(id("tax-deposit"), DAY, portfolio, RUB, money("200")));
+        OperationResult purchase = OPERATIONS.buy(id("tax-buy"), DAY.plusDays(1), position, 1,
                 money("90"), money("0"), money("100"), new Commissions(money("1.25"), money("0.25")));
         service.apply(portfolio, false, purchase);
-        OperationResult coupon = BondOperations.coupon(couponId, DAY.plusDays(2),
+        OperationResult coupon = OPERATIONS.coupon(couponId, DAY.plusDays(2),
                 purchase.positionAfter().orElseThrow(), money("10"), Optional.of(money("2")));
         service.apply(portfolio, false, coupon);
 
         service.apply(portfolio, false,
-                BondOperations.taxCorrection(id("tax-up"), DAY.plusDays(3), portfolio,
+                OPERATIONS.taxCorrection(id("tax-up"), DAY.plusDays(3), portfolio,
                         couponId, money("1")));
         service.apply(portfolio, false,
-                BondOperations.taxCorrection(id("tax-down"), DAY.plusDays(4), portfolio,
+                OPERATIONS.taxCorrection(id("tax-down"), DAY.plusDays(4), portfolio,
                         couponId, money("-0.50")));
 
         LedgerSnapshot snapshot = repository.load(portfolio).orElseThrow();
@@ -62,9 +65,9 @@ class TaxCorrectionMemoryContractTests {
         OperationRecord originalCoupon = journal.get(2);
         OperationRecord upwardCorrection = journal.get(3);
         OperationRecord downwardCorrection = journal.get(4);
-        Account cash = account(portfolio, AccountKind.CASH);
-        Account tax = account(portfolio, AccountKind.TAX_WITHHELD);
-        Account commissionExpense = account(portfolio, AccountKind.COMMISSION_EXPENSE);
+        Account cash = account(portfolio, STANDARD.cash());
+        Account tax = account(portfolio, STANDARD.taxWithheld());
+        Account commissionExpense = account(portfolio, STANDARD.commissionExpense());
         Ledger restored = Ledger.restore(snapshot.state());
 
         assertEquals(5, snapshot.version(), "each operation, including each correction, advances the version");
@@ -94,7 +97,7 @@ class TaxCorrectionMemoryContractTests {
 
         LedgerSnapshot beforeOverRefund = repository.load(portfolio).orElseThrow();
         List<OperationRecord> journalBeforeOverRefund = repository.operations(portfolio);
-        OperationResult overRefund = BondOperations.taxCorrection(id("tax-over-refund"), DAY.plusDays(5),
+        OperationResult overRefund = OPERATIONS.taxCorrection(id("tax-over-refund"), DAY.plusDays(5),
                 portfolio, couponId, money("-2.51"));
         assertThrows(IllegalStateException.class,
                 () -> service.apply(portfolio, false, overRefund), "withholding cannot be corrected below zero");
@@ -104,13 +107,13 @@ class TaxCorrectionMemoryContractTests {
                 "rejected over-refund adds no journal record");
 
         LedgerSnapshot staleBase = repository.load(portfolio).orElseThrow();
-        OperationResult staleCorrection = BondOperations.taxCorrection(id("tax-stale-correction"),
+        OperationResult staleCorrection = OPERATIONS.taxCorrection(id("tax-stale-correction"),
                 DAY.plusDays(6), portfolio, couponId, money("-0.50"));
         Ledger staleAfter = Ledger.restore(staleBase.state()).apply(staleCorrection);
         LedgerCommit staleCommit = new LedgerCommit(staleBase.version(), staleBase.state(),
                 staleCorrection, staleAfter.state());
         service.apply(portfolio, false,
-                BondOperations.deposit(id("tax-cas-winner"), DAY.plusDays(6), portfolio, RUB, money("1")));
+                OPERATIONS.deposit(id("tax-cas-winner"), DAY.plusDays(6), portfolio, RUB, money("1")));
         LedgerSnapshot afterWinner = repository.load(portfolio).orElseThrow();
         List<OperationRecord> journalAfterWinner = repository.operations(portfolio);
 
@@ -133,17 +136,17 @@ class TaxCorrectionMemoryContractTests {
         Money expectedTax = money(adjustment);
         Money expectedCash = expectedTax.negate();
         assertEquals(expectedTax, posting.entries().stream()
-                .filter(entry -> entry.account().kind() == AccountKind.TAX_WITHHELD)
+                .filter(entry -> entry.account().code().equals(STANDARD.taxWithheld()))
                 .map(Posting.Entry::amount).reduce(Money.zero(RUB), Money::add));
         assertEquals(expectedCash, posting.entries().stream()
-                .filter(entry -> entry.account().kind() == AccountKind.CASH)
+                .filter(entry -> entry.account().code().equals(STANDARD.cash()))
                 .map(Posting.Entry::amount).reduce(Money.zero(RUB), Money::add));
         assertTrue(posting.entries().stream().map(Posting.Entry::amount)
                 .reduce(Money.zero(RUB), Money::add).isZero(), "correction posting balances");
     }
 
-    private static Account account(PortfolioId portfolio, AccountKind kind) {
-        return new Account(portfolio, kind, Optional.empty(), RUB);
+    private static Account account(PortfolioId portfolio, AccountCode code) {
+        return new Account(portfolio, code, Optional.empty(), RUB);
     }
 
     private static OperationId id(String value) { return new OperationId(value); }

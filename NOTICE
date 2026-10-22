@@ -7,7 +7,7 @@ The project's own code is licensed under the Apache License, Version 2.0
 (see LICENSE). Third-party components retain their respective licenses.
 The inventory below covers application dependencies and the test/coverage
 libraries configured by this project, not the JDK or the Gradle distribution.
-Recorded versions were checked on 2026-10-21; update this file when they change.
+Recorded versions were checked on 2026-10-21 (PIT section: 2026-10-22); update this file when they change.
 
 Application runtime
 -------------------
@@ -88,6 +88,44 @@ JaCoCo 0.8.15
   tooling; relocated ASM also occurs in the agent. Its BSD license and
   copyright notice are included in licenses/JaCoCo-about.html and
   licenses/BSD-3-Clause-ASM.txt.
+
+Mutation testing — build-time only, not part of check
+------------------------------------------------------
+PIT (pitest) and its Gradle plugin are used only by the manual `:core:pitest` task
+(see docs/verification.md). They are not on any test or runtime classpath, are not
+part of `check`, and are not shipped in installDist.
+
+PIT core 1.30.1 and JUnit 5 plugin 1.2.3
+  Coordinates: org.pitest:pitest, org.pitest:pitest-entry,
+    org.pitest:pitest-command-line, org.pitest:pitest-html-report (1.30.1);
+    org.pitest:pitest-junit5-plugin (1.2.3).
+  License: Apache-2.0 — licenses/Apache-2.0.txt.
+  Sources:
+    https://github.com/hcoles/pitest/tree/1.30.1
+    https://github.com/pitest/pitest-junit5-plugin
+
+Gradle plugin info.solidsoft.pitest 1.19.0
+  Coordinates: info.solidsoft.pitest:info.solidsoft.pitest.gradle.plugin 1.19.0;
+    info.solidsoft.gradle.pitest:gradle-pitest-plugin 1.19.0 (build plugin classpath only).
+  License: Apache-2.0 — licenses/Apache-2.0.txt.
+  Source: https://github.com/szpak/gradle-pitest-plugin/tree/1.19.0
+
+Transitive components of the `pitest` Gradle configuration
+  ASM 9.11 (org.ow2.asm:asm, asm-commons, asm-tree, asm-util, asm-analysis):
+    BSD-3-Clause — licenses/BSD-3-Clause-ASM.txt (ASM copyright notice).
+    Source: https://gitlab.ow2.org/asm/asm
+  Apache Commons Text 1.14.0 and Commons Lang 3.18.0 (org.apache.commons:commons-text,
+    commons-lang3): Apache-2.0 — licenses/Apache-2.0.txt. Not redistributed by installDist.
+    Source: https://commons.apache.org/proper/commons-text/
+  jopt-simple 4.9 (net.sf.jopt-simple:jopt-simple): MIT — licenses/MIT-jopt-simple.txt
+    (upstream LICENSE.txt; the 4.9 artifact has no bundled license file).
+    Source: https://github.com/jopt-simple/jopt-simple
+  ANTLR 2.7.7 (antlr:antlr): ANTLR 2 License (public-domain statement with an attribution
+    request; POM says "BSD License") — licenses/ANTLR2-license.txt.
+    Source: https://www.antlr2.org/license.html
+  StringTemplate 3.2.1 (org.antlr:stringtemplate): BSD-3-Clause — licenses/BSD-3-Clause-StringTemplate.txt
+    (upstream LICENSE.txt, copyright 2003-2008 Terence Parr).
+    Source: https://github.com/antlr/stringtemplate3
 
 Distribution and verification notes
 -----------------------------------

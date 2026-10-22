@@ -195,6 +195,51 @@ class AdapterContractTests {
         assertEquals(2, requests.get(), "the overflowing page is rejected without fetching another page");
     }
 
+    @Test
+    void scheduleRowAndPageBudgetsAreReachedWithAccurateMessages() {
+        // Row budget: 128-row pages (the per-page maximum) exceed the 20000-row block budget on page 157.
+        AtomicInteger rowPages = new AtomicInteger();
+        Transport rowFlood = request -> {
+            if (!request.uri().getPath().endsWith("bondization.xml")) {
+                return descriptionXml();
+            }
+            int page = rowPages.incrementAndGet();
+            if (!"coupons".equals(query(request.uri(), "iss.only"))) {
+                return pageXml(query(request.uri(), "iss.only"), List.of());
+            }
+            List<String> rows = new ArrayList<>();
+            for (int index = 0; index < 128; index++) {
+                rows.add("<row page=\"" + page + "\" index=\"" + index + "\"/>");
+            }
+            return pageXml("coupons", rows);
+        };
+        IllegalStateException rowFailure = assertThrows(IllegalStateException.class,
+                () -> limitedAdapter(rowFlood, 1L << 20, defaultXmlLimits(), 256, 128)
+                        .bond(new SecurityId("ROWS")), "block row budget is enforced");
+        assertTrue(rowFailure.getMessage().startsWith("MOEX coupons exceeded maximum row count of 20000"),
+                rowFailure.getMessage());
+        assertEquals(157, rowPages.get(), "the page that would exceed 20000 rows is rejected after fetching it");
+
+        // Page budget: one distinct row per page reaches the 1000-page budget before the row budget.
+        AtomicInteger pageRequests = new AtomicInteger();
+        Transport pageFlood = request -> {
+            if (!request.uri().getPath().endsWith("bondization.xml")) {
+                return descriptionXml();
+            }
+            if (!"coupons".equals(query(request.uri(), "iss.only"))) {
+                return pageXml(query(request.uri(), "iss.only"), List.of());
+            }
+            int page = pageRequests.incrementAndGet();
+            return pageXml("coupons", List.of("<row page=\"" + page + "\"/>"));
+        };
+        IllegalStateException pageFailure = assertThrows(IllegalStateException.class,
+                () -> limitedAdapter(pageFlood, 1L << 20, defaultXmlLimits(), 256, 128)
+                        .bond(new SecurityId("PAGES")), "block page budget is enforced");
+        assertTrue(pageFailure.getMessage().startsWith("MOEX coupons exceeded maximum page count of 1000"),
+                pageFailure.getMessage());
+        assertEquals(1000, pageRequests.get(), "exactly the page budget is fetched before rejection");
+    }
+
     private static String descriptionXml() {
         return "<document><data id=\"description\"><rows>"
                 + "<row name=\"SECID\" value=\"TEST\"/><row name=\"FUTURE_FIELD\" value=\"raw unknown value\"/>"

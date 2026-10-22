@@ -26,7 +26,10 @@ SQLite и compaction остаются будущими отдельными gate
   scope. Исторические JavaExec main-runner suites мигрированы на JUnit Jupiter; проверки сохранены,
   а тестовая компиляция и whitebox execution по-прежнему остаются classpath-only.
 - `:core` accounting distinguishes spendable per-currency `CASH` from non-spendable
-  `TAX_WITHHELD`; explicit nonzero commissions and withholding use separate postings. `TAX_CORRECTION`
+  `TAX_WITHHELD` in the standard `BondAccountingPolicy`; the engine uses `LedgerChart` roles,
+  not account names. `AccountCode` replaces the former enum; chart is frozen in `LedgerState`.
+  Instance `BondOperations` and accounting services receive one composition-root policy.
+  Explicit nonzero commissions and withholding use separate postings. `TAX_CORRECTION`
   postings append a linked withholding adjustment, and application `TaxCorrectionService` commits
   an explicitly supplied corrected total without rewriting the original receipt or journal. Details:
   [accounting](core-accounting.md) and [investment accounts](investment-accounts.md).
@@ -150,7 +153,7 @@ public interface LedgerRepositoryFactory { LedgerRepository create(RepositoryCon
   core/application/root). Атомарные семантики (CAS, дедуп, sequence) определены в контракте
   фазы 1, проверяются реализацией фазы 2 — НЕ откладываются в «hardening» (§4.6, §6).
 - В текущем application API также есть отдельные `InvestmentAccountRepository` и
-  `InvestmentAccountRepositoryFactory`: инвестиционный account metadata не является `AccountKind` и не
+  `InvestmentAccountRepositoryFactory`: инвестиционный account metadata не является `AccountCode` и не
   меняет ledger. Root загружает эту фабрику с тем же provider ID, что и ledger repository; memory provider
   предоставляет обе реализации. `CouponReceiptService` записывает только вручную подтвержденные
   gross/tax/net, а `TaxCorrectionService` добавляет коррекцию только по caller-supplied corrected total.
@@ -164,13 +167,14 @@ public interface LedgerRepositoryFactory { LedgerRepository create(RepositoryCon
 // :core, core.ledger — эскиз; поведение существующих методов не меняется
 public LedgerState state();                   // глубокая неизменяемая копия ВСЕГО состояния
 public static Ledger restore(LedgerState s);  // полная ревалидация; вход НЕ доверенный
-// LedgerState: portfolio, allowNegativeCash, balances, positions, postingsByDate, operationIds
+// LedgerState: portfolio, chart, allowNegativeCash, balances, positions, postingsByDate, operationIds
 ```
 
 Пределы и обязательные утверждения:
 - `state()` — глубокая копия (защита от изменяемых представлений); `restore()` считает вход
   недоверенным и ревалидирует структурные инварианты: каждый posting сбалансирован по каждой
-  валюте; позиции сверены с балансами `SECURITIES`/`ACCRUED_INTEREST`; identity/date-согласованность
+  валюте; позиции сверены с балансами по chart position bindings (в стандартной policy —
+  `SECURITIES`/`ACCRUED_INTEREST`); identity/date-согласованность
   postings; `portfolio` согласован со всеми `Account`; операция МОЖЕТ иметь несколько postings
   (валидация без предположения 1:1).
 - Дубликаты `OperationId`: `Set` молча дедуплицирует — canonical-конструктор `LedgerState` НЕ
@@ -178,7 +182,15 @@ public static Ledger restore(LedgerState s);  // полная ревалидац
   при decode журнала в репозитории (уникальность групп по `(portfolio, operationId)`).
 - Структурная согласованность НЕ доказывает историческую финансовую достижимость состояния —
   план этого НЕ заявляет; гарантируется только внутренняя непротиворечивость. Финансовая
-  семантика домена не меняется; `OperationResult`/`BondOperations`/`apply` не тронуты.
+  семантика домена не меняется. В double-entry v1.0.0 `BondOperations` стал instance,
+  а `apply` использует роли chart; контракт `OperationResult` сохранен.
+- Chart — часть самодостаточного state и CAS-equality, неизменен после
+  `Ledger.open(portfolio, chart, allowNegativeCash)`. Сервисы получают policy в
+  конструкторе и отвергают другой persisted chart по value-equality. `LedgerCommit`
+  явно запрещает смену chart. Первый успешный commit выбирает chart без гарантии
+  подлинности; генератор и валидатор согласуются wiring, не проверкой происхождения.
+  `Main` accounting-сервисы пока не создает; при их сборке policy создается только
+  composition root. `OperationKind` остается enum, новых exports/модулей нет.
 - Стоимость: `state()` и каждый commit копируют полную историю — O(операций); обёртка-репозиторий
   НЕ извлекает неограниченную историю из in-memory `Ledger`. ЯВНАЯ отдельная будущая стадия
   (фаза 5b): extraction/compaction — вынос истории/дедупликации в репозиторий с переносом

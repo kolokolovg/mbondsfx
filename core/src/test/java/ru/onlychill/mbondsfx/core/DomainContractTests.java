@@ -592,6 +592,118 @@ final class DomainContractTests {
         assertEquals(jpy, jpyBond.currency(), "BondDefinition accepts zero-decimal JPY currency");
     }
 
+    @Test
+    void indexedFaceAllowsZeroFixingAndRejectsNegativeIndexedFace() {
+        DatedPeriod p = period(ISSUE, LocalDate.of(2026, 7, 1));
+        LocalDate amortDate = LocalDate.of(2026, 4, 1);
+        LocalDate observation = LocalDate.of(2026, 3, 30);
+        IndexationRule indexation = rule(RATE, new BigDecimal("100"), LocalDate.of(2026, 2, 1), 2);
+        BondDefinition indexedBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                BigDecimal.ZERO, List.of(p))), principal("1000", List.of(event(amortDate, "100")),
+                Optional.of(indexation)));
+        assertEquals(money("0", RUB), BondCalculations.facePerUnit(indexedBond, amortDate,
+                fixings(fixing(RATE, observation, "0"))), "zero index fixing yields zero indexed face");
+        IllegalArgumentException negative = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.facePerUnit(indexedBond, amortDate, fixings(fixing(RATE, observation, "-1"))));
+        assertEquals("Indexation must not produce negative outstanding face", negative.getMessage());
+    }
+
+    @Test
+    void scheduleAndCalculationDateGuardsReportTheirRule() {
+        DatedPeriod p = period(ISSUE, LocalDate.of(2026, 7, 1));
+        BondDefinition fixedBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(p))), principal("1000", List.of(), Optional.empty()));
+        BondDefinition zeroCoupon = zeroCouponBond();
+        IllegalArgumentException noSchedule = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.couponAmount(zeroCoupon, p, DayCounts.act365F(), noFixings()));
+        assertEquals("Bond has no coupon schedule", noSchedule.getMessage());
+
+        IllegalArgumentException beforeIssue = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(fixedBond, ISSUE.minusDays(1), DayCounts.act365F(), noFixings()));
+        assertEquals("Calculation date must not precede issueDate", beforeIssue.getMessage());
+        IllegalArgumentException zeroCouponBeforeIssue = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(zeroCoupon, ISSUE.minusDays(1), DayCounts.act365F(), noFixings()));
+        assertEquals("Calculation date must not precede issueDate", zeroCouponBeforeIssue.getMessage());
+        IllegalArgumentException afterMaturity = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(fixedBond, MATURITY.plusDays(1), DayCounts.act365F(), noFixings()));
+        assertEquals("Calculation date must not be after maturityDate", afterMaturity.getMessage());
+    }
+
+    @Test
+    void positiveIntervalWithZeroYearFractionIsRejected() {
+        DayCount zeroFraction = new DayCount() {
+            @Override
+            public BigDecimal yearFraction(LocalDate start, LocalDate end) {
+                return BigDecimal.ZERO;
+            }
+
+            @Override
+            public long days(LocalDate start, LocalDate end) {
+                return 0;
+            }
+        };
+        DatedPeriod p = period(ISSUE, LocalDate.of(2026, 7, 1));
+        BondDefinition fixedBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(p))), principal("1000", List.of(), Optional.empty()));
+        IllegalArgumentException coupon = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.couponAmount(fixedBond, p, zeroFraction, noFixings()));
+        assertEquals("DayCount must return a positive fraction for a positive interval", coupon.getMessage());
+        IllegalArgumentException accrued = assertThrows(IllegalArgumentException.class,
+                () -> BondCalculations.accrued(fixedBond, LocalDate.of(2026, 2, 1), zeroFraction, noFixings()));
+        assertEquals("DayCount must return a positive fraction for a positive interval", accrued.getMessage());
+    }
+
+    @Test
+    void everyDistinctAmortizationDateInsideCouponPeriodStartsOneSegment() {
+        DatedPeriod halfYear = period(ISSUE, LocalDate.of(2026, 7, 1));
+        BondDefinition twoEvents = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(halfYear))), principal("1000",
+                List.of(event(LocalDate.of(2026, 2, 1), "100"), event(LocalDate.of(2026, 4, 1), "200")),
+                Optional.empty()));
+        // Segments: 31 days at 1000, 59 days at 900, 91 days at 700; (31000 + 53100 + 63700) / 365 * 10%.
+        assertEquals(money("40.49", RUB), BondCalculations.couponAmount(twoEvents, halfYear,
+                DayCounts.act365F(), noFixings()), "each distinct amortization date starts its own segment");
+
+        BondDefinition sameDayEvents = bond(ISSUE, Optional.of(MATURITY), Optional.of(new FixedCoupon(
+                new BigDecimal("0.10"), List.of(halfYear))), principal("1000",
+                List.of(event(LocalDate.of(2026, 2, 1), "100"), event(LocalDate.of(2026, 2, 1), "50")),
+                Optional.empty()));
+        // One boundary on Feb 1 (no zero-length segment): 31 days at 1000, 150 days at 850.
+        assertEquals(money("43.42", RUB), BondCalculations.couponAmount(sameDayEvents, halfYear,
+                DayCounts.act365F(), noFixings()), "duplicate amortization dates share one segment boundary");
+    }
+
+    @Test
+    void floatingFixingErrorsKeepOnlyTheRequestedIndexAndDate() {
+        DatedPeriod p = period(ISSUE, LocalDate.of(2026, 7, 1));
+        FloatingCoupon floating = new FloatingCoupon(floatingFormula(0, BigDecimal.ZERO, DayCounts.act365F(),
+                Optional.empty(), Optional.empty()), List.of(p));
+        BondDefinition floatingBond = bond(ISSUE, Optional.of(MATURITY), Optional.of(floating),
+                principal("1000", List.of(), Optional.empty()));
+
+        MissingIndexValueException exact = new MissingIndexValueException(RATE, ISSUE);
+        MissingIndexValueException rethrown = assertThrows(MissingIndexValueException.class,
+                () -> BondCalculations.couponAmount(floatingBond, p, DayCounts.act365F(),
+                        (index, date) -> { throw exact; }));
+        assertSame(exact, rethrown, "exact requested index and date is rethrown unchanged");
+
+        MissingIndexValueException otherIndex = new MissingIndexValueException(new IndexId("OTHER"), ISSUE);
+        MissingIndexValueException wrappedIndex = assertThrows(MissingIndexValueException.class,
+                () -> BondCalculations.couponAmount(floatingBond, p, DayCounts.act365F(),
+                        (index, date) -> { throw otherIndex; }));
+        assertEquals(RATE, wrappedIndex.index(), "foreign index is replaced by the requested index");
+        assertEquals(ISSUE, wrappedIndex.date(), "foreign index keeps the requested date");
+        assertSame(otherIndex, wrappedIndex.getCause(), "foreign index keeps the source as cause");
+
+        MissingIndexValueException otherDate = new MissingIndexValueException(RATE, ISSUE.plusDays(7));
+        MissingIndexValueException wrappedDate = assertThrows(MissingIndexValueException.class,
+                () -> BondCalculations.couponAmount(floatingBond, p, DayCounts.act365F(),
+                        (index, date) -> { throw otherDate; }));
+        assertEquals(RATE, wrappedDate.index(), "foreign date keeps the requested index");
+        assertEquals(ISSUE, wrappedDate.date(), "foreign date is replaced by the requested date");
+        assertSame(otherDate, wrappedDate.getCause(), "foreign date keeps the source as cause");
+    }
+
     private static BondDefinition zeroCouponBond() {
         return bond(ISSUE, Optional.of(MATURITY), Optional.empty(), principal("1000", List.of(), Optional.empty()));
     }

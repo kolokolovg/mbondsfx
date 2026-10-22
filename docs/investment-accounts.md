@@ -3,8 +3,9 @@
 Навигация по документации: [README.md](README.md). Источники налоговых правил собраны в
 [документе о налогах и ИИС-3](bond-tax-and-iis3.md).
 
-Метаданные инвестиционного счета относятся к application и отделены от `core.ledger.AccountKind`,
-который описывает денежные и учетные субсчета ledger (`CASH`, `TAX_WITHHELD` и другие). В текущем registry
+Метаданные инвестиционного счета относятся к application и отделены от `core.ledger.AccountCode`,
+который идентифицирует денежные и учетные субсчета ledger. `CASH`, `TAX_WITHHELD` и другие
+имена ниже — стандартный словарь `BondAccountingPolicy`, а не константы движка. В текущем registry
 хранится один явно заданный `InvestmentAccount` на `PortfolioId`:
 
 - `InvestmentAccount.brokerage(portfolio)` создает счет `BROKERAGE` без условий ИИС-3.
@@ -41,7 +42,7 @@ allowNegativeCash)` — пользовательское подтвержден�
 
 Сервис проверяет, что данные счета зарегистрированы и совпадают, позиция относится к тому же портфелю
 и соответствует текущей позиции ledger, а дата получения по ИИС-3 не раньше даты открытия. Затем он
-вызывает `BondOperations.coupon` и `LedgerApplicationService`: базовая проводка зачисляет в
+вызывает instance-метод `BondOperations.coupon` и `LedgerApplicationService`: базовая проводка зачисляет в
 `CASH` **gross**, а ненулевое удержание проводится отдельной сбалансированной проводкой `D TAX_WITHHELD /
 C CASH` с теми же operation ID и датой. В результате `CASH` отражает доступное **net**, а
 `TAX_WITHHELD` отдельно сохраняет фактически удержанное; это не расход, не автоматический расчет
@@ -79,7 +80,8 @@ InvestmentAccount account = InvestmentAccount.newIis3WithMinimumTermForOpeningDa
         portfolio, openingDate, Optional.empty());
 investmentAccounts.register(account);
 
-CouponReceipt receipt = new CouponReceiptService(investmentAccounts, ledgerRepository).confirm(
+// policy создана composition root и используется всеми accounting-сервисами/генератором.
+CouponReceipt receipt = new CouponReceiptService(investmentAccounts, ledgerRepository, policy).confirm(
         account, currentPosition, operationId, actualPaymentDate,
         new Money(new BigDecimal("100.00"), RUB), // начислено до удержания
         new Money(new BigDecimal("0.00"), RUB),   // явно подтвержденное удержание
@@ -139,3 +141,11 @@ Application владеет `InvestmentAccount`, `InvestmentAccountRepository` и
 in-memory хранилище; после перезапуска оно не сохраняется. Composition root выбирает registry по тому
 же provider ID, что и ledger repository, и явно завершается ошибкой, если provider не предоставляет
 registry. Новых production-зависимостей нет.
+
+Accounting-сервисы получают одну `BondAccountingPolicy` через конструкторы:
+`LedgerApplicationService(repository, policy)`, `TaxCorrectionService(repository, policy)`,
+`CouponReceiptService(accounts, ledgers, policy)`. Chart входит в `LedgerState`,
+фиксируется при открытии и восстанавливается без внешней конфигурации. Snapshot
+с другим chart отклоняется по value-equality; менять chart существующего ledger нельзя.
+Первый успешный CAS выбирает chart, но не аутентифицирует его. Custom-policy
+меняет коды, не финансовые формулы, правила receipt или investment-account метаданные.

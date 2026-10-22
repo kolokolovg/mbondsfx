@@ -6,21 +6,17 @@ import java.util.Optional;
 import ru.onlychill.mbondsfx.core.id.PortfolioId;
 import ru.onlychill.mbondsfx.core.id.SecurityId;
 
-/** Account identity includes portfolio, kind, optional security, and currency-specific subaccount. */
-public record Account(PortfolioId portfolio, AccountKind kind,
+/** Account identity includes portfolio, configured code, optional security, and currency subaccount. */
+public record Account(PortfolioId portfolio, AccountCode code,
                       Optional<SecurityId> security, Currency currency) {
     public Account {
         Objects.requireNonNull(portfolio, "portfolio");
-        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(code, "code");
         Objects.requireNonNull(security, "security");
         Objects.requireNonNull(currency, "currency");
         if (currency.getDefaultFractionDigits() < 0) {
             throw new IllegalArgumentException("Pseudo-currency has no minor-unit scale: "
                     + currency.getCurrencyCode());
-        }
-        if (kind.requiresSecurity() != security.isPresent()) {
-            throw new IllegalArgumentException(kind + (kind.requiresSecurity()
-                    ? " requires a security" : " is not security-scoped"));
         }
     }
 }
