@@ -14,8 +14,8 @@ ext.slf4jVersion = '2.0.20'
 // enforced by jacocoTestCoverageVerification wired into `check`. Root is not listed: its production code is
 // exercised by out-of-process module-path subprocesses that JaCoCo does not instrument.
 def coverageThresholds = [
-        ':core'                : [line: 0.93, branch: 0.82,
-                                  packages: ['ru.onlychill.mbondsfx.core.ledger': [line: 0.90, branch: 0.77]]],
+        ':core'                : [line: 0.95, branch: 0.85,
+                                  packages: ['ru.onlychill.mbondsfx.core.ledger': [line: 0.93, branch: 0.80]]],
         ':application'         : [line: 0.88, branch: 0.74, packages: [:]],
         ':integrations'        : [line: 0.84, branch: 0.75, packages: [:]],
         ':integrations-moex'   : [line: 0.85, branch: 0.72, packages: [:]],

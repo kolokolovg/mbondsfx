@@ -32,7 +32,7 @@ SQLite и compaction остаются будущими отдельными gate
   Explicit nonzero commissions and withholding use separate postings. `TAX_CORRECTION`
   postings append a linked withholding adjustment, and application `TaxCorrectionService` commits
   an explicitly supplied corrected total without rewriting the original receipt or journal. Details:
-  [accounting](core-accounting.md) and [investment accounts](investment-accounts.md).
+  [accounting](../guides/core-accounting.md) and [investment accounts](../guides/investment-accounts.md).
 
 ## 2. Целевая топология и направление зависимостей
 

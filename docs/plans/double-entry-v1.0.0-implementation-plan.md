@@ -211,7 +211,7 @@ source/AST guard в существующем сьюте без новых биб
 ### 6. Согласовать документацию и выполнить единую приемку
 
 1. Вместе с кодом обновить `docs/guides/core-accounting.md`,
-   `docs/guides/architecture-plan.md`, `docs/guides/investment-accounts.md`,
+   `docs/plans/architecture-plan.md`, `docs/guides/investment-accounts.md`,
    `docs/methodology/bond-tax-and-iis3.md`, а также root/core/application/memory `AGENTS.md`.
    Зафиксировать chart в state, freeze, policy как источник словаря, constructor
    injection и единственную точку создания policy в composition root.

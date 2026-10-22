@@ -85,7 +85,6 @@ public final class BondOperations {
         requireNonNegative(accruedPerUnit, currency, "accruedPerUnit");
         requirePositive(facePerUnit, currency, "facePerUnit");
         requireNonNegative(commissions.brokerCommission(), currency, "brokerCommission");
-        requireNonNegative(commissions.otherCommission(), currency, "otherCommission");
         long newQuantity = Math.addExact(current.quantity(), quantity);
         Money cleanTotal = cleanPricePerUnit.multiply(quantity);
         Money accruedTotal = accruedPerUnit.multiply(quantity);
@@ -194,7 +193,6 @@ public final class BondOperations {
         requireNonNegative(cleanPricePerUnit, currency, "cleanPricePerUnit");
         requireNonNegative(accruedReceivedPerUnit, currency, "accruedReceivedPerUnit");
         requireNonNegative(commissions.brokerCommission(), currency, "brokerCommission");
-        requireNonNegative(commissions.otherCommission(), currency, "otherCommission");
         Money tax = taxOnGainTotal.orElseGet(() -> Money.zero(currency));
         requireNonNegative(tax, currency, "taxOnGainTotal");
 

@@ -31,7 +31,7 @@
 living-документы; living-документы обновляются на реализацию (вместе с кодом,
 по правилам root `AGENTS.md`). Пока ни одна версия здесь не реализована,
 действующим описанием учета остается `docs/guides/core-accounting.md` и текущий код.
-`docs/guides/architecture-plan.md` использует собственную in-place практику ревизий
+`docs/plans/architecture-plan.md` использует собственную in-place практику ревизий
 (rev.3) — она не распространяется на этот каталог, а semver-практика этого
 каталога не распространяется на него.
 
@@ -59,6 +59,7 @@ latest-implemented = v1.0.0.** Версия v1.0.0 явно утверждена
 | Версия | Согласование | Реализация | Дата | Commit утверждения | Содержание |
 |---|---|---|---|---|---|
 | [v1.0.0](v1.0.0.md) | APPROVED | IMPLEMENTED | 2026-10-21 | `9c1dffe4b0276624fd9edc27412d3624ccdf1648` | Устранение хардкода плана счетов из double-entry движка: `AccountCode`, `LedgerChart`, chart в `LedgerState`, instance `BondOperations` |
+| [v2.0.0](v2.0.0.md) | DRAFT | NOT_STARTED | 2026-10-22 | — | Налоговые обязательства (`TAX_LIABILITY`, `TAX_DEFERRED_OFFSET`), вывод с удержанием, лоты FIFO в `Position`, `availableCashBalances()`; MAJOR, заменяет v1.0.0 после утверждения; источник — taxation v1.0.0 (разделы 7–8) |
 
 Статусы и evidence (commit-хэши, ссылки на проверки) фиксируются **только в
 индексе**. Шапка файла версии фиксирует статус на момент подготовки проекта;

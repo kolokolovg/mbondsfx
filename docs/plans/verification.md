@@ -20,12 +20,12 @@ scope выравнивается ограничением до 2.0.20 — той
 
 Новые зависимости необходимо один раз загрузить перед использованием `--offline`.
 Тестовые библиотеки не добавляются в JPMS descriptors или приложение. Лицензии и
-источники перечислены в [NOTICE](../NOTICE); их копии включаются в distribution.
+источники перечислены в [NOTICE](../../NOTICE); их копии включаются в distribution.
 Root blackbox suite проверяет сохранность этих копий и отсутствие тестовых библиотек в `lib`.
 
 ## Свойства jqwik
 
-Источник действующего контракта — [текущий учет](core-accounting.md) и локальные правила `:core`.
+Источник действующего контракта — [текущий учет](../guides/core-accounting.md) и локальные правила `:core`.
 `LedgerProperties` выполняет четыре свойства, каждое с бюджетом 250 попыток:
 
 | Контракт | Свойство |
@@ -91,15 +91,15 @@ ArchUnit не проверяет бизнес-формулы, строковые
 
 PIT (`info.solidsoft.pitest` 1.19.0, PIT core 1.30.1, `pitest-junit5-plugin` 1.2.3; все Apache-2.0)
 подключен только к `:core` как build/test-инструмент. Он не входит в `check`, `build`, production/runtime
-classpath и distribution. Порог мутационного скора задан `mutationThreshold = 93` в `core/build.gradle`:
-`./gradlew :core:pitest` падает, если скор ниже 93%; `check` и `build` PIT не запускают.
+classpath и distribution. Порог мутационного скора задан `mutationThreshold = 97` в `core/build.gradle`:
+`./gradlew :core:pitest` падает, если скор ниже 97%; `check` и `build` PIT не запускают.
 
 ```bash
 ./gradlew :core:pitest
 ```
 
 Отчеты: `core/build/reports/pitest/index.html` и `mutations.xml` (без таймстемпа). Нацеленные пакеты:
-`core.ledger`, `core.money`, `core.bond.calculation`. Тесты `ArchitectureContractTests` и
+`core.ledger`, `core.money`, `core.bond`, `core.bond.calculation`. Тесты `ArchitectureContractTests` и
 `BytecodeArchitectureContractTests` исключены из PIT: они читают Gradle-свойства и проверяют структуру,
 а не поведение. Property-тесты jqwik (`LedgerProperties`) PIT выполняет через JUnit Platform
 engine jqwik; их база `core/build/pitest/jqwik-database` не версионируется и удаляется `clean`.
@@ -131,16 +131,65 @@ Kill-тесты добавлены без изменения production-кода
 Число TIMED_OUT колеблется между прогонами (2–6, включая 2 в финальном прогоне), поэтому скор меняется
 на доли процента; время прогона тоже плавает (от ~1 до ~9 минут).
 
-Оставшиеся 14 мутантов (12 выживших и 2 без покрытия) эквивалентны либо лежат в мертвом коде; тесты под них не подгоняются:
+### Эквивалентные и мертвые мутанты (фаза 3б)
 
-- `BondCalculations.floatingRate`: границы floor `<`→`<=` и cap `>`→`>=` (2) присваивают равное значение; округление до валюты убирает различия масштаба.
-- `BondOperations.buy` и `sell`: снятие `requireNonNegative(otherCommission)` (2); `Commissions` уже проверяет знак и валюту, а проверка брокерской комиссии выполняется раньше.
-- `BondOperations.proportional`: границы знаменателя и числителя (3) недостижимы: `sell` требует `0 < quantity < quantity позиции`, `amortization` требует `0 < reduction < face`, равенство обрабатывается полным погашением; клампинг `>`→`>=` (1) присваивает равное значение.
-- `BondOperations.min` `<=`→`<` (1): при равенстве возвращаются равные `Money`, проводки идентичны.
-- `HolidayCalendar.shift` `>`→`>=` (1): при `businessDays == 0` метод уже вернул управление.
-- `LedgerChart.intersects` → `false` (1): spendable содержит ровно один код, равный counterpart; пересечение со scoped или no-negative срабатывает в проверках counterpart/scoped с тем же сообщением.
-- `Ledger.operationDate`, лямбда → `true` (1): возвращаемая дата не позже даты операции, так как `apply` запрещает обратную датировку; ветка «precedes» не срабатывает.
-- `Ledger.validateTaxCorrection` и `Ledger.validateTaxCorrectionPosting`, лямбды (2, без покрытия): мертвый код; `OperationResult` гарантирует связь у каждой проводки `TAX_CORRECTION`, остальные вызовы передают уже связанные проводки.
+После удаления мертвой ветки `Ledger.validateTaxCorrection` и метода `operationDate` (см. ограничения ниже) `:core:pitest`
+обнаруживает 594 из 607 мутантов (97,86%; `TIMED_OUT` PIT относит к обнаруженным). Не обнаружены 13 мутантов, все SURVIVED.
+Каждый разобран по коду. Ни один не меняет наблюдаемый результат на достижимых входах, поэтому тесты под них не добавлялись
+и не подгонялись под мутант; исключения в PIT не добавлены. Номера строк относятся к текущим исходникам `:core`.
+
+| Класс | Метод, строка | Мутатор | Статус | Обоснование |
+|---|---|---|---|---|
+| `BondOperations` | `proportional`, 296 | `<=` → `<` для знаменателя | SURVIVED | Знаменатель всегда > 0. `amortization`: `reduction > 0` (`requirePositive`, строка 141) и `reduction ≤ face` (строки 148–150), значит `face > 0`. `sell`: `current.quantity() > 0` (`requireOpen`, строка 187). Ветка `== 0` недостижима. |
+| `BondOperations` | `proportional`, 297 | `< 0` → `<= 0` для числителя | SURVIVED | Числитель всегда > 0: `reduction` проходит `requirePositive` (строка 141), `quantity` — `requireQuantity` (строка 188). |
+| `BondOperations` | `proportional`, 297 | `>` → `>=` для числителя относительно знаменателя | SURVIVED | Числитель строго меньше знаменателя. `amortization` вызывает `proportional` только при `!fullPrincipalReduction` (строка 151); `Money` канонизирует значение (`stripTrailingZeros`), поэтому равенство `reduction == face` определяется по значению и уходит в полное погашение, а `reduction > face` выбрасывает раньше (строка 148). `sell` при `quantity == current.quantity()` идет по полной продаже (строка 199), `quantity > current.quantity()` выбрасывает раньше (строка 189). |
+| `BondOperations` | `proportional`, 305 | `>` → `>=` для клампа | SURVIVED | При равенстве присваивается `amount.amount()`, то есть то же значение; `Money` канонизирует его, итоговый `Money` совпадает. |
+| `BondOperations` | `min`, 312 | `<=` → `<` | SURVIVED | При `compareTo == 0` (одна валюта, одно значение) оба аргумента — равные record `Money` (канонизация), поэтому проводки и позиции совпадают. Единственный вызов: `coupon`, строка 119. |
+| `BondCalculations` | `floatingRate`, 285 | `<` → `<=` для пола | SURVIVED | При `rate == floor` по `compareTo` присваивается равное значение. Результат (`segmentedInterest`, `Money.multiply`) зависит только от значения, а не от масштаба `BigDecimal`: умножение, сложение и `setScale` точны по значению. |
+| `BondCalculations` | `floatingRate`, 288 | `>` → `>=` для потолка | SURVIVED | То же, что для строки 285. |
+| `HolidayCalendar` | `shift`, 39 | `>` → `>=` для направления | SURVIVED | `businessDays == 0` возвращается в строке 35. При остальных значениях `>` и `>=` дают одно направление. |
+| `LedgerChart` | `intersects`, 138 | возврат `false` | SURVIVED | `spendable` содержит ровно один код `s` (строка 100). Если `s ∈ scoped`, то `counterpart ∈ spendable` (строка 114), то есть `counterpart == s`, и `scoped.contains(counterpart)` истинно (строка 115): бросается то же `IllegalArgumentException("Incompatible account roles")`. Для `noNegative ⊆ spendable` (строка 117) рассуждение то же. |
+| `BondDefinition` | `<init>`, 31 | удаление `requireCurrency(event.faceReductionPerUnit(), …)` (void) | SURVIVED | `Principal` (строка 27) гарантирует, что валюта каждой амортизации равна валюте начального номинала, а строка 28 в `BondDefinition` связывает номинал с валютой облигации. Проверка всегда проходит. |
+| `CouponPeriods` | `copySortedAndValidate`, 18 | удаление `forEach(requireNonNull(period))` (void) | SURVIVED | Тип `NullPointerException` сохраняется: из компаратора при n ≥ 2 или из `List.copyOf` при n = 1. Меняется только текст. Копия списка локальная, внешнего эффекта нет. |
+| `Principal` | `<init>`, 23 | удаление `forEach(requireNonNull(event))` (void) | SURVIVED | `NullPointerException` сохраняется: из сортировки при n ≥ 2 или из цикла строк 26–27 при n = 1. Меняется только текст. |
+| `RedemptionOptions` | `sortedCopy`, 25 | удаление `forEach(requireNonNull(option))` (void) | SURVIVED | `NullPointerException` сохраняется: из компаратора при n ≥ 2 или из `List.copyOf` при n = 1. Меняется только текст. |
+
+Ограничения трактовки:
+
+- Для `CouponPeriods.copySortedAndValidate` (18), `Principal.<init>` (23) и `RedemptionOptions.sortedCopy` (25) меняется только
+  текст `NullPointerException` (`"period"`, `"event"`, `"option"`). Контракт null-дисциплины (спецификация double-entry v1.0.0,
+  R5.4 и «null-элементы → NPE») задает тип исключения, а не текст, и тесты `:core` проверяют тип. Если текст станет
+  контрактом, эти мутанты убиваются проверкой `getMessage()`.
+- Исключения `excludedMethods` и `avoidCallsTo` в `core/build.gradle` не добавлены: `excludedMethods` исключает все мутанты
+  метода, включая обнаруживаемые (`buy`, `sell`, `proportional`, `floatingRate`, `shift`, `BondDefinition.<init>`,
+  `copySortedAndValidate`, `Principal.<init>`, `sortedCopy`), а `avoidCallsTo` действует на уровне пакета. Порог достижим без них.
+- `Ledger`: проверки `link.isEmpty()` в `validateTaxCorrection` и `validateTaxCorrectionPosting` заменены на
+  `adjustsOperation().orElseThrow()` по решению владельца. В `validateTaxCorrection` связь гарантирует `OperationResult`
+  (у каждой проводки `TAX_CORRECTION` она есть, строки 38–42). `validateTaxCorrectionPosting` вызывается только на проводках
+  со связью: из `taxWithheldForOperation` (строка 213, под `filter(...).isPresent()`), из `validateTaxCorrection` (после связи)
+  и из `validateTaxCorrectionHistory` при `restore` (строки 368 и 398, под `adjustsOperation().isPresent()`). Восстановленный
+  недоверенный state попадает в ветку поправки только со связью, поэтому отсутствие связи недостижимо и при `restore`.
+  Сообщения «missing its original operation link» и «has no adjusted operation» тестами не проверяются и в спецификации
+  не описаны; в недостижимых ветках исключение теперь `NoSuchElementException`.
+- `Ledger`: ветка «Tax correction precedes or lacks its original operation» и метод `operationDate` удалены по решению владельца
+  как недостижимые: `apply` отвергает корректировку датой раньше последней даты истории (строки 65–68, до вызова
+  `validateTaxCorrection` в строке 69), а `restore` проверяет совпадение `operationIds` с операциями из проводок (строка 317);
+  `apply` поддерживает то же соответствие. Поэтому исходная операция всегда есть в истории и не позже даты корректировки.
+  Правило «дата коррекции ≥ даты исходной» обеспечивает проверка обратной датировки; тест
+  `correctionDatedBeforeTheOriginalIsRejectedAsBackdatedWhenAnEarlierOperationExists` фиксирует ее сообщение «Backdated operation».
+- `BondOperations.buy` и `sell`: проверки `requireNonNegative(commissions.otherCommission(), …)` удалены как избыточные по решению
+  владельца: `Commissions` гарантирует одну валюту компонент и их неотрицательность (спецификация R8.19), брокерская проверка
+  выполняется раньше. Мутанты `buy` 88 и `sell` 197 исчезли вместе с проверкой. Тесты не сравнивают текст
+  «otherCommission must not be negative»; отрицательная прочая комиссия проверяется напрямую у `Commissions`
+  (`LedgerContractTests`), поскольку удаленная проверка полагалась на него.
+- Расхождение со спецификацией: `docs/specs/double-entry/v1.0.0.md`, §10.2, шаг 3, описывает для этого условия сообщение
+  «Tax correction precedes…». Реализация его не выдает ни до удаления (ветка была недостижима), ни после. Версия v1.0.0
+  утверждена и не переписывается; выровнять текст можно только новой версией спецификации с согласованием владельца.
+- `mutationThreshold = 97`. PIT сравнивает скор, округленный до целого процента (HALF_UP, `thresholdPrecision` = 0):
+  594/607 = 97,86% дает 98%. Порог 97 не превышает фактический скор; порог 98 прошел бы только за счет округления и не ставится.
+  Гейт падает при 585 и меньше убитых, то есть при потере 9 мутантов. В текущем прогоне 40 из 592 убитых мутантов первым
+  убивающим тестом PIT записал свойство jqwik (PIT записывает только первого убийцу). Потеря 9 обнаружений за прогон
+  уронит гейт; при таких срывах порог снижается до 96 с записью в журнале плана.
 
 `BondAccountingPolicy.standard` (NullReturnVals) до kill-тестов выживал: тесты вызывали его в статических полях; теперь проверяется методом теста.
 Порог действует только на задачу `:core:pitest` и еженедельный workflow; `check` и `build` PIT не запускают.

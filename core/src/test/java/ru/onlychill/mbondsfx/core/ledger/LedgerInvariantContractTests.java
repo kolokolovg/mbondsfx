@@ -77,6 +77,38 @@ final class LedgerInvariantContractTests {
                 "correction is accepted against the only dated history");
     }
 
+    @Test
+    void correctionDatedBeforeTheOriginalIsRejectedAsBackdatedWhenAnEarlierOperationExists() {
+        OperationId coupon = id("coupon-before");
+        Ledger ledger = taxedCouponLedger(coupon, DAY1.plusDays(2));
+
+        // A correction dated before the original is rejected by the backdating guard against the latest history date;
+        // the original operation is never later than that date, so no separate tax-correction dating check exists.
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () ->
+                ledger.apply(OPS.taxCorrection(id("early-fix"), DAY1.plusDays(1), PF, coupon, m("-0.50"))));
+        assertEquals("Backdated operation " + DAY1.plusDays(1) + " before " + DAY1.plusDays(2), thrown.getMessage());
+    }
+
+    @Test
+    void correctionOnTheOriginalDateIsAcceptedWhenAnEarlierOperationExists() {
+        OperationId coupon = id("coupon-on");
+        Ledger ledger = taxedCouponLedger(coupon, DAY1.plusDays(2));
+
+        Ledger corrected = ledger.apply(OPS.taxCorrection(id("same-day-fix"), DAY1.plusDays(2), PF, coupon, m("-0.50")));
+        assertEquals(m("0.50"), corrected.taxWithheldForOperation(coupon),
+                "a correction on the original date is accepted when an earlier operation exists");
+    }
+
+    /** Opening and purchase on DAY1, then a taxed coupon on {@code couponDate}, which becomes the latest history date. */
+    private static Ledger taxedCouponLedger(OperationId coupon, LocalDate couponDate) {
+        Ledger ledger = Ledger.open(PF, CHART, false).apply(OPS.opening(id("open"), DAY1, PF, RUB, m("1000")));
+        OperationResult purchase = OPS.buy(id("buy"), DAY1, Position.empty(positionId(), RUB),
+                1, m("100"), m("0"), m("100"), m("0"));
+        ledger = ledger.apply(purchase);
+        return ledger.apply(OPS.coupon(coupon, couponDate, purchase.positionAfter().orElseThrow(),
+                m("10"), Optional.of(m("1"))));
+    }
+
     private static LedgerState stateWithBalance(Account account, Money amount) {
         return new LedgerState(PF, CHART, false, Map.of(account, amount), Map.of(), new TreeMap<>(), Set.of());
     }

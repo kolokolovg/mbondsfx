@@ -21,7 +21,7 @@
 
 ### 1. Средний: HTTP-ответ не ограничен по размеру
 
-[HttpTransport.java:40–41](../integrations/src/main/java/ru/onlychill/mbondsfx/integrations/transport/HttpTransport.java#L40)
+[HttpTransport.java:40–41](../../integrations/src/main/java/ru/onlychill/mbondsfx/integrations/transport/HttpTransport.java#L40)
 
 `BodyHandlers.ofString()` полностью загружает ответ в память, затем адаптеры создают DOM.
 Большой ответ способен вызвать исчерпание памяти; таймаут этого не предотвращает.
@@ -31,7 +31,7 @@
 
 ### 2. Средний: глубокий XML вызывает переполнение стека
 
-[SecureXml.java:78–85](../integrations/src/main/java/ru/onlychill/mbondsfx/integrations/xml/SecureXml.java#L78)
+[SecureXml.java:78–85](../../integrations/src/main/java/ru/onlychill/mbondsfx/integrations/xml/SecureXml.java#L78)
 
 Обход DOM рекурсивный. Воспроизведено на текущем коде с JDK 21: XML глубиной 20 000
 элементов успешно парсится, затем возникает `StackOverflowError` в `descendants()`.
@@ -61,7 +61,7 @@
 
 ### НКД в начале периода требует fixing
 
-[BondCalculations.java:141–147](../core/src/main/java/ru/onlychill/mbondsfx/core/bond/calculation/BondCalculations.java#L141)
+[BondCalculations.java:141–147](../../core/src/main/java/ru/onlychill/mbondsfx/core/bond/calculation/BondCalculations.java#L141)
 
 Плавающая ставка запрашивается даже при пустом интервале начисления. Если
 `settle == accrualStart`, offset равен нулю и fixing отсутствует, возникает
@@ -73,7 +73,7 @@ fixing не является основанием возвращать ноль.
 
 ### Неодинаковая точность номинала
 
-[BondCalculations.java:40–54](../core/src/main/java/ru/onlychill/mbondsfx/core/bond/calculation/BondCalculations.java#L40)
+[BondCalculations.java:40–54](../../core/src/main/java/ru/onlychill/mbondsfx/core/bond/calculation/BondCalculations.java#L40)
 
 Обычный номинал сохраняет точность, индексированный округляется. При коэффициенте `1`
 номинал `1000.005 RUB` возвращается соответственно как `1000.005` и `1000.01`.
@@ -85,7 +85,7 @@ fixing не является основанием возвращать ноль.
 
 ### 1. Уточнить согласованность чтения репозитория
 
-[LedgerRepository.java:6–19](../application/src/main/java/ru/onlychill/mbondsfx/application/port/LedgerRepository.java#L6)
+[LedgerRepository.java:6–19](../../application/src/main/java/ru/onlychill/mbondsfx/application/port/LedgerRepository.java#L6)
 
 Атомарность записи snapshot+journal обеспечена, но отдельные вызовы `load()` и
 `operations()` могут увидеть разные версии при конкурентном коммите. Это не дефект
@@ -96,9 +96,9 @@ fixing не является основанием возвращать ноль.
 
 ### 2. Сократить дублирующую проверку перехода состояния
 
-[LedgerCommit.java:32–35](../application/src/main/java/ru/onlychill/mbondsfx/application/port/LedgerCommit.java#L32)
+[LedgerCommit.java:32–35](../../application/src/main/java/ru/onlychill/mbondsfx/application/port/LedgerCommit.java#L32)
 уже проверяет применение операции.
-[InMemoryLedgerRepository.java:88–91](../persistence-memory/src/main/java/ru/onlychill/mbondsfx/persistence/memory/InMemoryLedgerRepository.java#L88)
+[InMemoryLedgerRepository.java:88–91](../../persistence-memory/src/main/java/ru/onlychill/mbondsfx/persistence/memory/InMemoryLedgerRepository.java#L88)
 повторяет расчет после проверки точного `before`.
 
 Упрощать адресно, сохраняя CAS, дедупликацию и атомарность. Текущая стоимость работы с

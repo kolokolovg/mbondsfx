@@ -337,14 +337,9 @@ public final class Ledger {
             return;
         }
         Posting correction = result.postings().getFirst();
-        OperationId originalOperation = correction.adjustsOperation().orElseThrow(
-                () -> new IllegalStateException("Tax correction is missing its original operation link"));
+        OperationId originalOperation = correction.adjustsOperation().orElseThrow();
         if (!operationIds.contains(originalOperation)) {
             throw new IllegalStateException("Tax correction references an unknown operation: " + originalOperation);
-        }
-        LocalDate originalDate = operationDate(originalOperation);
-        if (originalDate == null || result.date().isBefore(originalDate)) {
-            throw new IllegalStateException("Tax correction precedes or lacks its original operation");
         }
 
         Money adjustment;
@@ -361,15 +356,6 @@ public final class Ledger {
         if (current.add(adjustment).isNegative()) {
             throw new IllegalStateException("Tax correction cannot reduce cumulative withholding below zero");
         }
-    }
-
-    private LocalDate operationDate(OperationId operation) {
-        for (Map.Entry<LocalDate, List<Posting>> dated : postingsByDate.entrySet()) {
-            if (dated.getValue().stream().anyMatch(posting -> posting.operation().equals(operation))) {
-                return dated.getKey();
-            }
-        }
-        return null;
     }
 
     private static void validateTaxCorrectionHistory(LedgerState state, LedgerChart chart) {
@@ -455,8 +441,7 @@ public final class Ledger {
 
     private static Money validateTaxCorrectionPosting(
             Posting posting, PortfolioId portfolio, LedgerChart chart) {
-        OperationId original = posting.adjustsOperation().orElseThrow(
-                () -> new IllegalArgumentException("Correction posting has no adjusted operation"));
+        OperationId original = posting.adjustsOperation().orElseThrow();
         if (posting.operation().equals(original)) {
             throw new IllegalArgumentException("Tax correction cannot adjust itself");
         }

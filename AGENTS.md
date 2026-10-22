@@ -167,7 +167,7 @@ Mutation testing (PIT, Apache-2.0) одобрен только как build/test
 в `check`, `build` и основную CI-сборку; порог мутационного скора (`mutationThreshold` в `core/build.gradle`) проверяет сама задача `:core:pitest`; еженедельный запуск
 идет отдельным workflow `.github/workflows/mutation.yml`. Не переносите PIT в production/runtime
 classpath и не добавляйте в другие модули без нового одобрения. Подробности — в
-[docs/guides/verification.md](docs/guides/verification.md).
+[docs/plans/verification.md](docs/plans/verification.md).
 
 Проверки используют стандартный Gradle `Test` task с JUnit Jupiter и `useJUnitPlatform()`;
 `check` автоматически включает `test`. HTML/XML reports доступны в

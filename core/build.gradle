@@ -1,6 +1,6 @@
 plugins {
     id 'java-library'
-    // PIT mutation testing: build/test tooling only, not wired into `check`; see docs/guides/verification.md.
+    // PIT mutation testing: build/test tooling only, not wired into `check`; see docs/plans/verification.md.
     id 'info.solidsoft.pitest' version '1.19.0'
 }
 
@@ -32,15 +32,19 @@ tasks.named('test', Test) {
 
 // PIT (mutation testing), build/test-only. Run manually: ./gradlew :core:pitest
 // Not part of `check`. mutationThreshold fails only the pitest task and the weekly workflow.
-// Baseline 452/511 (88%) before kill tests; 497/511 (97%) after. Remaining survivors are equivalent or dead code
-// (see docs/guides/verification.md), so the threshold sits a few points below the achieved score.
+// Measured 594/607 (97.86%) after removing redundant guards (Ledger link checks, buy/sell other-commission checks).
+// PIT's gate compares the score rounded to a whole percent (HALF_UP), so 97.86% shows as 98%; 97 does not exceed
+// the measured score. The gate fails at 585 killed or fewer. The 13 undetected mutants are equivalent, each classified
+// in docs/plans/verification.md.
+// No excludedMethods/avoidCallsTo: a method-level exclusion would also hide killable mutants of the same methods.
 pitest {
     pitestVersion = '1.30.1'
     junit5PluginVersion = '1.2.3'
-    mutationThreshold = 93
+    mutationThreshold = 97
     targetClasses = [
             'ru.onlychill.mbondsfx.core.ledger.*',
             'ru.onlychill.mbondsfx.core.money.*',
+            'ru.onlychill.mbondsfx.core.bond.*',
             'ru.onlychill.mbondsfx.core.bond.calculation.*',
     ]
     targetTests = ['ru.onlychill.mbondsfx.core.*']

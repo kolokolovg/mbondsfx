@@ -78,7 +78,7 @@ replace the root distribution/module-path acceptance required for the full chang
 Mutation testing: PIT (`info.solidsoft.pitest` 1.19.0, PIT 1.30.1, JUnit 5 plugin 1.2.3) одобрен
 пользователем только как build/test-инструмент `:core`. Он запускается вручную через
 `./gradlew :core:pitest` и не входит в `check`; порог мутационного скора задан `mutationThreshold` в `core/build.gradle` и проверяется самой задачей `:core:pitest`. Целевые пакеты:
-`core.ledger`, `core.money`, `core.bond.calculation`. Архитектурные guards исключены из PIT-прогона.
+`core.ledger`, `core.money`, `core.bond`, `core.bond.calculation`. Архитектурные guards исключены из PIT-прогона.
 PIT не добавляется в production/runtime classpath, JPMS descriptors и distribution.
 
 ```bash

@@ -534,6 +534,8 @@ final class LedgerContractTests {
         assertThrows(IllegalArgumentException.class,
                 () -> new Commissions(m("-0.01"), m("0")), "negative broker commission rejected");
         assertThrows(IllegalArgumentException.class,
+                () -> new Commissions(m("0"), m("-0.01")), "negative other commission rejected");
+        assertThrows(IllegalArgumentException.class,
                 () -> new Commissions(m("1"), new Money(new BigDecimal("1"), USD)),
                 "commission components must use one currency");
 
